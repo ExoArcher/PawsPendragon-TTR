@@ -53,22 +53,28 @@ _GIT_REPO = "https://github.com/ExoArcher/LanceAQuack-TTR"
 try:
     if not _os.path.isdir(_os.path.join(_BOT_DIR, ".git")):
         print("[auto-update] No .git found -- initialising repo from GitHub...", flush=True)
-        _subprocess.run(["git", "init"],                               cwd=_BOT_DIR, check=True, capture_output=True)
-        _subprocess.run(["git", "remote", "add", "origin", _GIT_REPO], cwd=_BOT_DIR, check=True, capture_output=True)
-        _subprocess.run(["git", "fetch", "origin", "main"],             cwd=_BOT_DIR, check=True, capture_output=True)
-        _subprocess.run(["git", "reset", "--hard", "origin/main"],      cwd=_BOT_DIR, check=True, capture_output=True)
+        _subprocess.run(["git", "init"],                                cwd=_BOT_DIR, check=True, capture_output=True)
+        _subprocess.run(["git", "remote", "add", "origin", _GIT_REPO],  cwd=_BOT_DIR, check=True, capture_output=True)
+        _subprocess.run(["git", "fetch", "origin", "main"],              cwd=_BOT_DIR, check=True, capture_output=True)
+        _subprocess.run(["git", "checkout", "-b", "main", "--track", "origin/main"],
+                        cwd=_BOT_DIR, check=True, capture_output=True)
         print("[auto-update] Repo initialised. Restarting with GitHub code...", flush=True)
         _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
     else:
-        _result = _subprocess.run(
-            ["git", "pull"],
-            cwd=_BOT_DIR, capture_output=True, text=True,
-        )
-        _stdout = _result.stdout.strip()
-        print(f"[auto-update] git pull: {_stdout}", flush=True)
-        if "Already up to date." not in _stdout:
-            print("[auto-update] New code pulled. Restarting...", flush=True)
+        # Compare local HEAD vs remote to avoid infinite restart loop
+        _subprocess.run(["git", "fetch", "origin", "main"],
+                        cwd=_BOT_DIR, check=True, capture_output=True)
+        _local  = _subprocess.run(["git", "rev-parse", "HEAD"],
+                                  cwd=_BOT_DIR, capture_output=True, text=True).stdout.strip()
+        _remote = _subprocess.run(["git", "rev-parse", "origin/main"],
+                                  cwd=_BOT_DIR, capture_output=True, text=True).stdout.strip()
+        if _local != _remote:
+            _subprocess.run(["git", "reset", "--hard", "origin/main"],
+                            cwd=_BOT_DIR, check=True, capture_output=True)
+            print(f"[auto-update] Updated {_local[:7]} -> {_remote[:7]}. Restarting...", flush=True)
             _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+        else:
+            print(f"[auto-update] Already up to date ({_local[:7]}).", flush=True)
 except Exception as _e:
     print(f"[auto-update] WARNING: git update failed ({_e}). Running existing code.", flush=True)
 # ---------------------------------------------------------------------------
