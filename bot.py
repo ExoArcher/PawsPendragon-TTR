@@ -192,14 +192,11 @@ class TTRBot(discord.Client):
         assert self.user is not None
         log.info("Logged in as %s (id=%s)", self.user, self.user.id)
         log.info(
-            "In %d guild(s); env-allowlist=%d; runtime-allowlist=%d; owners=%d",
+            "In %d guild(s); env-allowlist=%d; runtime-allowlist=%d; admins=%d",
             len(self.guilds), len(self.config.guild_allowlist),
-            len(self._runtime_allowlist()), len(self.config.owner_ids),
+            len(self._runtime_allowlist()), len(self.config.admin_ids),
         )
-        if self.config.owner_ids:
-            log.info("Bot-owner IDs: %s", ", ".join(str(i) for i in sorted(self.config.owner_ids)))
-        else:
-            log.warning("BOT_OWNER_IDS is empty — /laq-* owner commands will reject everyone.")
+        log.info("Bot-admin IDs: %s", ", ".join(str(i) for i in sorted(self.config.admin_ids)))
 
         for guild in list(self.guilds):
             if not self.is_guild_allowed(guild.id):
@@ -782,13 +779,13 @@ class TTRBot(discord.Client):
             )
             await interaction.response.send_message(msg, ephemeral=True)
 
-        # ── owner-only guard ──────────────────────────────────────────────
-        async def _reject_non_owner(interaction: discord.Interaction) -> bool:
-            if not self.config.is_owner(interaction.user.id):
-                log.info("Rejecting non-owner %s (id=%s)", interaction.user, interaction.user.id)
+        # ── admin-only guard ──────────────────────────────────────────────
+        async def _reject_non_admin(interaction: discord.Interaction) -> bool:
+            if not self.config.is_admin(interaction.user.id):
+                log.info("Rejecting non-admin %s (id=%s)", interaction.user, interaction.user.id)
                 await interaction.response.send_message(
-                    f"This command is restricted to bot owners. "
-                    f"Your user ID `{interaction.user.id}` is not in `BOT_OWNER_IDS`.",
+                    f"This command is restricted to bot admins. "
+                    f"Your user ID `{interaction.user.id}` is not in `BOT_ADMIN_IDS`.",
                     ephemeral=True,
                 )
                 return True
@@ -801,7 +798,7 @@ class TTRBot(discord.Client):
         )
         @app_commands.describe(text="The announcement text to send to every tracked server.")
         async def laq_announce(interaction: discord.Interaction, text: str) -> None:
-            if await _reject_non_owner(interaction):
+            if await _reject_non_admin(interaction):
                 return
             text = text.strip()
             if not text:
@@ -831,10 +828,9 @@ class TTRBot(discord.Client):
 
 def main() -> None:
     config = Config.load()
-    if not config.guild_allowlist and not config.owner_ids:
+    if not config.guild_allowlist:
         log.warning(
-            "Both GUILD_ALLOWLIST and BOT_OWNER_IDS are empty — the bot "
-            "cannot join any server and has no admins. Edit your .env."
+            "GUILD_ALLOWLIST is empty — the bot cannot join any server. Edit your .env."
         )
     bot = TTRBot(config)
     bot.run(config.token, log_handler=None)
