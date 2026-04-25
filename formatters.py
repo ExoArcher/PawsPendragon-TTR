@@ -883,6 +883,63 @@ def format_information(
     return embed
 
 
+
+
+# ---------------------------------------------------------------------- sillymeter
+
+
+def format_sillymeter(data: dict[str, Any] | None) -> discord.Embed:
+    """Embed showing whether a Silly Team is active or the meter is charging.
+
+    The TTR Silly Meter API returns a ``state`` field of either
+    ``"Rewarding"`` (a winning team is currently active) or ``"Charging"``
+    (the meter is filling up). The ``winner`` field holds the active team
+    name when rewarding, and is null when charging.
+    """
+    embed = discord.Embed(title="\U0001f3aa Silly Meter", color=TTR_COLOR)
+
+    if data is None:
+        embed.description = ":warning: Could not reach the TTR Silly Meter API."
+        _footer(embed, None)
+        return embed
+
+    state  = (data.get("state") or "").strip()
+    winner = (data.get("winner") or "").strip()
+
+    if state.lower() == "rewarding" and winner:
+        embed.description = (
+            f"\u2705 **There is an active Silly Team!**\n\n"
+            f"**Current Team:** {winner}\n\n"
+            f"*The Silly Meter is fully charged and rewarding Toons.*"
+        )
+    else:
+        embed.description = (
+            "\u26a1 **The Silly Meter is currently charging.**\n\n"
+            "*There is no active Silly Team right now. "
+            "Keep playing to help charge the meter!*"
+        )
+
+    teams = data.get("teams") or []
+    if isinstance(teams, list) and teams:
+        lines: list[str] = []
+        for team in teams:
+            if not isinstance(team, dict):
+                continue
+            name   = team.get("name") or "Unknown"
+            points = team.get("points")
+            if points is not None:
+                try:
+                    lines.append(f"\u2022 **{name}** \u2014 {int(points):,} points")
+                except (TypeError, ValueError):
+                    lines.append(f"\u2022 **{name}**")
+            else:
+                lines.append(f"\u2022 **{name}**")
+        if lines:
+            embed.add_field(name="Team Standings", value="\n".join(lines), inline=False)
+
+    _footer(embed, data.get("lastUpdated"))
+    return embed
+
 # --------------------------------------------------------------- public mapping
 #
 # Each formatter takes the full api_data dict (keyed by API name) and

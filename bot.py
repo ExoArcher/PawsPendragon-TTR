@@ -5,37 +5,36 @@ How it works
 1. The bot is invited to one or more Discord servers. Only servers
    whose ID is in the *effective* allowlist (env ``GUILD_ALLOWLIST``
    ∪ runtime allowlist persisted in ``state.json``) are accepted; the
-   bot leaves any other guild that tries to add it.
+   bot leaves any other guild that tries to add it, DMing the owner
+   with instructions to request access from ExoArcher.
 2. In each allowed guild, an admin runs **``/laq-setup``** once. That
    command finds-or-creates the ``Toontown Rewritten`` category plus a
    ``#tt-information`` and ``#tt-doodles`` channel, posts a placeholder
    message in each, and stores the message IDs in ``state.json``.
 3. A background task runs every ``$REFRESH_INTERVAL`` seconds, fetches
-   the four TTR APIs ONCE, and edits each tracked guild's messages in
-   place. The channels stay clean — no new message per tick.
-4. A separate sweep task runs every 15 minutes, deleting any stale bot
-   messages left behind from crashes or re-runs.
+   the TTR APIs ONCE, and edits each tracked guild's messages in place.
+4. A separate sweep task runs every 15 minutes removing stale bot messages.
 
-Slash commands
---------------
-Server admin (``Manage Server``):
+Slash commands (all users)
+--------------------------
+``/laq-ttrinfo``    — send current district/invasion/sillymeter info.
+``/laq-ttrdoodle``  — send the current doodle list.
+
+Slash commands (Manage Server)
+-------------------------------
 ``/laq-setup``    — create channels and start tracking this guild.
 ``/laq-refresh``  — force an immediate refresh and sweep old messages.
 ``/laq-teardown`` — stop tracking this guild (channels are NOT deleted).
 
-Bot owner only (``BOT_OWNER_IDS``):
+Slash commands (bot owner only)
+--------------------------------
 ``/laq-announce`` — broadcast a message to every tracked guild.
-                    Auto-deletes after 30 minutes; orphans cleaned
-                    on the bot's next startup.
-``/laq-clear``    — delete every bot message in this server and
-                    reset its tracking state.
+``/laq-clear``    — delete every bot message here and reset tracking.
 
 Panel announcements
 -------------------
-Create a file called ``panel_announce.txt`` in the bot's working
-directory via the hosting panel's File Manager. The bot detects it
-within 90 seconds, broadcasts the contents as an announcement to every
-tracked guild, then deletes the file automatically.
+Create ``panel_announce.txt`` in the File Manager. The bot picks it up
+within 90 seconds, broadcasts it to every tracked guild, and deletes it.
 """
 from __future__ import annotations
 
@@ -51,7 +50,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 from config import Config
-from formatters import FORMATTERS
+from formatters import FORMATTERS, format_doodles, format_information, format_sillymeter
 from ttr_api import TTRApiClient
 
 logging.basicConfig(
@@ -60,16 +59,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("ttr-bot")
 
-# Persisted channel + message IDs and runtime admin state.
 STATE_FILE = Path(__file__).with_name("state.json")
 STATE_VERSION = 2
-
-# Drop a file called panel_announce.txt in the panel's File Manager
-# to broadcast an announcement to every tracked guild.
 ANNOUNCE_FILE = Path(__file__).with_name("panel_announce.txt")
-
 ANNOUNCEMENT_TITLE = "📢 LAQ Bot Announcement"
 ANNOUNCEMENT_TTL_SECONDS = 30 * 60
+
+# Shown to any guild owner whose server fails the allowlist check.
+CLOSED_ACCESS_MSG = (
+    "Hello! Thank you for your enthusiasm to have me join your community! "
+    "At this time I am only in closed access — please DM **ExoArcher** on "
+    "Discord (user ID `310233741354336257`) to request access."
+)
 
 
 class TTRBot(discord.Client):
@@ -85,7 +86,7 @@ class TTRBot(discord.Client):
         self._refresh_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
 
-    # ---------- state persistence -----------------------------------
+    # ------------------------------------------------------------------ state
 
     def _load_state(self) -> dict[str, Any]:
         if not STATE_FILE.exists():
@@ -95,56 +96,32 @@ class TTRBot(discord.Client):
         except Exception as e:
             log.warning("Could not load state file: %s", e)
             return self._empty_state()
-
         if not isinstance(raw, dict) or not raw:
             return self._empty_state()
-
         version = raw.get("_version")
         if version == STATE_VERSION:
             raw.setdefault("guilds", {})
             raw.setdefault("allowlist", [])
             raw.setdefault("announcements", [])
             return raw
-
-        if all(
-            isinstance(v, dict) and "channel_id" in v
-            for v in raw.values()
-        ):
+        # v0 migration
+        if all(isinstance(v, dict) and "channel_id" in v for v in raw.values()):
             if len(self.config.guild_allowlist) == 1:
                 only = next(iter(self.config.guild_allowlist))
-                log.info("Migrating legacy v0 state to v%d under guild %s", STATE_VERSION, only)
-                return {
-                    "_version": STATE_VERSION,
-                    "guilds": {str(only): raw},
-                    "allowlist": [],
-                    "announcements": [],
-                }
-            log.warning("Found legacy v0 state but cannot migrate. Starting fresh.")
+                log.info("Migrating v0 state to v%d under guild %s", STATE_VERSION, only)
+                return {"_version": STATE_VERSION, "guilds": {str(only): raw}, "allowlist": [], "announcements": []}
+            log.warning("v0 state found but cannot migrate (need exactly one guild). Starting fresh.")
             return self._empty_state()
-
-        if all(
-            isinstance(v, dict) and not k.startswith("_")
-            for k, v in raw.items()
-        ):
+        # v1 migration
+        if all(isinstance(v, dict) and not k.startswith("_") for k, v in raw.items()):
             log.info("Migrating v1 state to v%d", STATE_VERSION)
-            return {
-                "_version": STATE_VERSION,
-                "guilds": dict(raw),
-                "allowlist": [],
-                "announcements": [],
-            }
-
+            return {"_version": STATE_VERSION, "guilds": dict(raw), "allowlist": [], "announcements": []}
         log.warning("Unrecognised state.json shape; starting fresh.")
         return self._empty_state()
 
     @staticmethod
     def _empty_state() -> dict[str, Any]:
-        return {
-            "_version": STATE_VERSION,
-            "guilds": {},
-            "allowlist": [],
-            "announcements": [],
-        }
+        return {"_version": STATE_VERSION, "guilds": {}, "allowlist": [], "announcements": []}
 
     async def _save_state(self) -> None:
         async with self._state_lock:
@@ -170,8 +147,7 @@ class TTRBot(discord.Client):
         return []
 
     def _set_state(self, guild_id: int, key: str, channel_id: int, message_ids: list[int]) -> None:
-        gs = self._guild_state(guild_id)
-        gs[key] = {"channel_id": channel_id, "message_ids": message_ids}
+        self._guild_state(guild_id)[key] = {"channel_id": channel_id, "message_ids": message_ids}
 
     def _runtime_allowlist(self) -> set[int]:
         return {int(x) for x in self.state.get("allowlist", [])}
@@ -185,27 +161,28 @@ class TTRBot(discord.Client):
     def _announcements(self) -> list[dict[str, Any]]:
         return self.state.setdefault("announcements", [])
 
-    async def _record_announcement(
-        self, guild_id: int, channel_id: int, message_id: int, expires_at: float
-    ) -> None:
+    async def _record_announcement(self, guild_id: int, channel_id: int, message_id: int, expires_at: float) -> None:
         self._announcements().append({
-            "guild_id": int(guild_id),
-            "channel_id": int(channel_id),
-            "message_id": int(message_id),
-            "expires_at": float(expires_at),
+            "guild_id": int(guild_id), "channel_id": int(channel_id),
+            "message_id": int(message_id), "expires_at": float(expires_at),
         })
         await self._save_state()
 
-    # ---------- Discord lifecycle -----------------------------------
+    # --------------------------------------------------------------- lifecycle
 
     async def setup_hook(self) -> None:
         self._api = TTRApiClient(self.config.user_agent)
         await self._api.__aenter__()
 
-        # Clear any stale globally-registered commands before re-registering.
+        # Push an empty global command list to Discord, wiping any old
+        # stale global commands (ttr_refresh, laq_guild_add, etc.).
         self.tree.clear_commands(guild=None)
-        self._register_commands()
         await self.tree.sync()
+
+        # Register the current commands in memory only.
+        # They will be synced per-guild in on_ready / on_guild_join,
+        # which prevents Discord from showing global + guild duplicates.
+        self._register_commands()
 
     async def close(self) -> None:
         if self._api is not None:
@@ -216,22 +193,14 @@ class TTRBot(discord.Client):
         assert self.user is not None
         log.info("Logged in as %s (id=%s)", self.user, self.user.id)
         log.info(
-            "In %d guild(s); env-allowlist=%d entries; "
-            "runtime-allowlist=%d entries; owners=%d",
-            len(self.guilds),
-            len(self.config.guild_allowlist),
-            len(self._runtime_allowlist()),
-            len(self.config.owner_ids),
+            "In %d guild(s); env-allowlist=%d; runtime-allowlist=%d; owners=%d",
+            len(self.guilds), len(self.config.guild_allowlist),
+            len(self._runtime_allowlist()), len(self.config.owner_ids),
         )
         if self.config.owner_ids:
-            log.info(
-                "Bot-owner IDs loaded: %s",
-                ", ".join(str(i) for i in sorted(self.config.owner_ids)),
-            )
+            log.info("Bot-owner IDs: %s", ", ".join(str(i) for i in sorted(self.config.owner_ids)))
         else:
-            log.warning(
-                "BOT_OWNER_IDS is empty — /laq-* owner commands will reject everyone."
-            )
+            log.warning("BOT_OWNER_IDS is empty — /laq-* owner commands will reject everyone.")
 
         for guild in list(self.guilds):
             if not self.is_guild_allowed(guild.id):
@@ -244,17 +213,13 @@ class TTRBot(discord.Client):
                 log.info("Pruning state for departed guild %s", gid)
                 self._guilds_block().pop(gid, None)
 
-        # Sync commands per-guild (instant propagation) and clear old names.
+        # Per-guild command sync: clears old names and registers new ones.
+        # Guild syncs propagate instantly; this also removes leftover
+        # ttr_refresh / laq_guild_add commands from previous versions.
         for guild in list(self.guilds):
             if not self.is_guild_allowed(guild.id):
                 continue
-            try:
-                self.tree.clear_commands(guild=guild)
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-                log.info("Per-guild command sync OK for %s (id=%s)", guild.name, guild.id)
-            except Exception:
-                log.exception("Per-guild command sync failed for %s (id=%s)", guild.name, guild.id)
+            await self._sync_commands_to_guild(guild)
 
         await self._cleanup_announcements_on_startup()
         await self._save_state()
@@ -262,7 +227,6 @@ class TTRBot(discord.Client):
         if not self._refresh_loop.is_running():
             self._refresh_loop.change_interval(seconds=self.config.refresh_interval)
             self._refresh_loop.start()
-
         if not self._sweep_loop.is_running():
             self._sweep_loop.start()
 
@@ -272,22 +236,29 @@ class TTRBot(discord.Client):
             await self._notify_and_leave(guild)
             return
         log.info("Joined allowlisted guild %s (id=%s)", guild.name, guild.id)
+        await self._sync_commands_to_guild(guild)
 
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         log.info("Removed from guild %s (id=%s)", guild.name, guild.id)
         self._guilds_block().pop(str(guild.id), None)
         await self._save_state()
 
+    async def _sync_commands_to_guild(self, guild: discord.Guild) -> None:
+        """Clear stale per-guild commands and push the current command set."""
+        try:
+            self.tree.clear_commands(guild=guild)
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            log.info("Command sync OK for %s (id=%s)", guild.name, guild.id)
+        except Exception:
+            log.exception("Command sync failed for %s (id=%s)", guild.name, guild.id)
+
     async def _notify_and_leave(self, guild: discord.Guild) -> None:
-        msg = (
-            "Hi! I'm a private TTR feeds bot and I'm not configured to "
-            "operate in your server. The owner needs to add your "
-            f"server ID (`{guild.id}`) to the bot's allowlist before re-inviting me."
-        )
+        """DM the guild owner the closed-access message, then leave."""
         try:
             owner = guild.owner or await guild.fetch_member(guild.owner_id)
             if owner is not None:
-                await owner.send(msg)
+                await owner.send(CLOSED_ACCESS_MSG)
         except Exception as e:
             log.debug("Could not DM owner of %s: %s", guild.name, e)
         try:
@@ -295,38 +266,32 @@ class TTRBot(discord.Client):
         except Exception as e:
             log.warning("Failed to leave guild %s: %s", guild.id, e)
 
-    # ---------- channel + message bootstrapping ---------------------
+    # ------------------------------------------------- channel bootstrapping
 
     async def _ensure_channels_for_guild(self, guild: discord.Guild) -> None:
         category = discord.utils.get(guild.categories, name=self.config.category_name)
         if category is None:
             log.info("Creating category %r in %s", self.config.category_name, guild.name)
             category = await guild.create_category(self.config.category_name)
-
         for key, channel_name in self.config.feeds().items():
             channel = discord.utils.get(guild.text_channels, name=channel_name)
             if channel is None:
                 log.info("Creating channel #%s in %s", channel_name, guild.name)
                 channel = await guild.create_text_channel(
-                    channel_name,
-                    category=category,
+                    channel_name, category=category,
                     topic=f"Live TTR {key} feed — auto-updated by bot.",
                 )
             await self._ensure_messages(guild.id, key, channel, at_least=1)
-
         await self._save_state()
 
     async def _send_placeholder(self, key: str, channel: discord.TextChannel) -> discord.Message:
-        placeholder = discord.Embed(
-            title=f"Loading {key}…",
-            description="Fetching the latest data from TTR.",
-            color=0x95A5A6,
-        )
-        msg = await channel.send(embed=placeholder)
+        msg = await channel.send(embed=discord.Embed(
+            title=f"Loading {key}…", description="Fetching the latest data from TTR.", color=0x95A5A6,
+        ))
         try:
             await msg.pin(reason="Live TTR feed pin")
         except (discord.Forbidden, discord.HTTPException) as e:
-            log.debug("Could not pin message in #%s: %s", channel.name, e)
+            log.debug("Could not pin in #%s: %s", channel.name, e)
         return msg
 
     async def _ensure_messages(
@@ -343,41 +308,35 @@ class TTRBot(discord.Client):
             except discord.Forbidden:
                 log.warning("No permission to fetch message in #%s", channel.name)
                 verified.append(mid)
-
         while len(verified) < at_least:
             msg = await self._send_placeholder(key, channel)
             verified.append(msg.id)
-
         self._set_state(guild_id, key, channel.id, verified)
         return verified
 
-    # ---------- announcement cleanup --------------------------------
+    # ------------------------------------------------------- announcement cleanup
 
     async def _delete_announcement_record(self, record: dict[str, Any]) -> None:
-        guild_id = int(record.get("guild_id", 0))
         channel_id = int(record.get("channel_id", 0))
         message_id = int(record.get("message_id", 0))
         try:
             channel = self.get_channel(channel_id)
             if isinstance(channel, discord.TextChannel):
                 try:
-                    msg = await channel.fetch_message(message_id)
-                    await msg.delete()
+                    await (await channel.fetch_message(message_id)).delete()
                 except discord.NotFound:
                     pass
                 except discord.Forbidden:
-                    log.warning("No permission to delete announcement %s in #%s", message_id, channel.name)
+                    log.warning("No permission to delete announcement %s", message_id)
         except Exception:
-            log.exception("Failed deleting announcement record %s/%s/%s", guild_id, channel_id, message_id)
+            log.exception("Failed deleting announcement %s", message_id)
         self._announcements()[:] = [
-            r for r in self._announcements()
-            if int(r.get("message_id", -1)) != message_id
+            r for r in self._announcements() if int(r.get("message_id", -1)) != message_id
         ]
 
     async def _cleanup_announcements_on_startup(self) -> None:
         for record in list(self._announcements()):
             await self._delete_announcement_record(record)
-
         for guild_id_str, gs in list(self._guilds_block().items()):
             try:
                 guild_id = int(guild_id_str)
@@ -393,25 +352,20 @@ class TTRBot(discord.Client):
                 async for msg in channel.history(limit=100):
                     if msg.author.id != (self.user.id if self.user else 0):
                         continue
-                    if not msg.embeds:
-                        continue
-                    if ANNOUNCEMENT_TITLE in (msg.embeds[0].title or ""):
+                    if msg.embeds and ANNOUNCEMENT_TITLE in (msg.embeds[0].title or ""):
                         try:
                             await msg.delete()
-                            log.info("Deleted orphan announcement %s in %s/#%s", msg.id, guild_id, channel.name)
+                            log.info("Deleted orphan announcement %s in %s", msg.id, guild_id)
                         except (discord.Forbidden, discord.NotFound):
                             pass
-            except discord.Forbidden:
-                log.debug("No permission to read history in %s/#%s", guild_id, channel.name)
             except Exception:
-                log.exception("Orphan-announcement scan failed in %s/#%s", guild_id, getattr(channel, "name", "?"))
+                log.exception("Orphan scan failed in %s/#%s", guild_id, getattr(channel, "name", "?"))
 
-    # ---------- stale-message sweep --------------------------------
+    # --------------------------------------------------------- stale-message sweep
 
     def _channel_keep_ids(self, guild_id: int, channel_id: int) -> set[int]:
         keep: set[int] = set()
-        gs = self._guild_state(guild_id)
-        for entry in gs.values():
+        for entry in self._guild_state(guild_id).values():
             if int(entry.get("channel_id", 0)) != channel_id:
                 continue
             for mid in entry.get("message_ids", []) or []:
@@ -436,37 +390,29 @@ class TTRBot(discord.Client):
         deleted = 0
         try:
             async for msg in channel.history(limit=history_limit):
-                if msg.author.id != bot_id:
-                    continue
-                if msg.id in keep_ids:
+                if msg.author.id != bot_id or msg.id in keep_ids:
                     continue
                 try:
                     await msg.delete()
                     deleted += 1
-                except discord.NotFound:
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     pass
-                except discord.Forbidden:
-                    log.debug("Forbidden deleting own msg %s in #%s", msg.id, channel.name)
-                except discord.HTTPException as e:
-                    log.debug("HTTP error deleting %s in #%s: %s", msg.id, channel.name, e)
         except discord.Forbidden:
             log.debug("No Read Message History in #%s; skipping sweep", channel.name)
         return deleted
 
     async def _sweep_guild_stale(self, guild_id: int) -> int:
         total = 0
-        gs = self._guild_state(guild_id)
-        seen_channels: set[int] = set()
-        for entry in gs.values():
+        seen: set[int] = set()
+        for entry in self._guild_state(guild_id).values():
             channel_id = int(entry.get("channel_id", 0))
-            if channel_id in seen_channels or channel_id == 0:
+            if channel_id in seen or channel_id == 0:
                 continue
-            seen_channels.add(channel_id)
+            seen.add(channel_id)
             channel = self.get_channel(channel_id)
             if not isinstance(channel, discord.TextChannel):
                 continue
-            keep = self._channel_keep_ids(guild_id, channel_id)
-            total += await self._sweep_channel_stale(channel, keep_ids=keep)
+            total += await self._sweep_channel_stale(channel, keep_ids=self._channel_keep_ids(guild_id, channel_id))
         return total
 
     async def _sweep_expired_announcements(self) -> None:
@@ -477,18 +423,10 @@ class TTRBot(discord.Client):
         if expired:
             await self._save_state()
 
-    # ---------- panel file announcement ----------------------------
+    # --------------------------------------------------------- panel file announce
 
     async def _check_panel_announce(self) -> None:
-        """Check for panel_announce.txt and broadcast its contents if found.
-
-        To send an announcement from the hosting panel:
-        1. Open the File Manager tab in the Cybrancee panel.
-        2. Create a new file called ``panel_announce.txt``.
-        3. Type your announcement text inside and save.
-        The bot will pick it up within 90 seconds, broadcast it to every
-        tracked guild, and delete the file automatically.
-        """
+        """Broadcast panel_announce.txt contents if the file exists, then delete it."""
         if not ANNOUNCE_FILE.exists():
             return
         try:
@@ -500,13 +438,10 @@ class TTRBot(discord.Client):
         if not text:
             return
         log.info("Panel announcement detected — broadcasting: %s", text[:80])
-        sent, failed, guilds_touched = await self._broadcast_announcement(text)
-        log.info(
-            "Panel announcement complete: %d message(s) across %d guild(s), %d failed.",
-            sent, guilds_touched, failed,
-        )
+        sent, failed, guilds = await self._broadcast_announcement(text)
+        log.info("Panel announcement: %d msg(s) across %d guild(s), %d failed.", sent, guilds, failed)
 
-    # ---------- the poll loop --------------------------------------
+    # ----------------------------------------------------------------- poll loops
 
     @tasks.loop(seconds=60)
     async def _refresh_loop(self) -> None:
@@ -526,20 +461,18 @@ class TTRBot(discord.Client):
 
     @tasks.loop(minutes=15)
     async def _sweep_loop(self) -> None:
-        """Periodic stale-message sweep — removes orphaned bot messages every 15 minutes."""
+        """Sweep stale bot messages from all tracked channels every 15 minutes."""
         for guild_id_str in list(self._guilds_block().keys()):
             try:
                 guild_id = int(guild_id_str)
             except ValueError:
                 continue
-            if not self.is_guild_allowed(guild_id):
-                continue
-            if self.get_guild(guild_id) is None:
+            if not self.is_guild_allowed(guild_id) or self.get_guild(guild_id) is None:
                 continue
             try:
                 swept = await self._sweep_guild_stale(guild_id)
                 if swept:
-                    log.info("Periodic sweep removed %d stale message(s) in guild %s", swept, guild_id)
+                    log.info("Periodic sweep: removed %d stale message(s) in guild %s", swept, guild_id)
             except Exception:
                 log.exception("Periodic sweep failed for guild %s", guild_id)
 
@@ -553,17 +486,12 @@ class TTRBot(discord.Client):
         if self._api is None:
             return {k: None for k in self._API_KEYS}
         results = await asyncio.gather(
-            *(self._api.fetch(k) for k in self._API_KEYS),
-            return_exceptions=True,
+            *(self._api.fetch(k) for k in self._API_KEYS), return_exceptions=True,
         )
-        api_data: dict[str, dict | None] = {}
-        for k, r in zip(self._API_KEYS, results):
-            if isinstance(r, BaseException):
-                log.warning("Fetch %s raised: %s", k, r)
-                api_data[k] = None
-            else:
-                api_data[k] = r
-        return api_data
+        return {
+            k: (None if isinstance(r, BaseException) else r)
+            for k, r in zip(self._API_KEYS, results)
+        }
 
     async def _refresh_once(self) -> None:
         if self._api is None:
@@ -575,10 +503,7 @@ class TTRBot(discord.Client):
                     guild_id = int(guild_id_str)
                 except ValueError:
                     continue
-                if not self.is_guild_allowed(guild_id):
-                    continue
-                guild = self.get_guild(guild_id)
-                if guild is None:
+                if not self.is_guild_allowed(guild_id) or self.get_guild(guild_id) is None:
                     continue
                 for feed_key in self.config.feeds():
                     try:
@@ -587,67 +512,51 @@ class TTRBot(discord.Client):
                         log.exception("Failed updating %s/%s", guild_id, feed_key)
             await self._save_state()
 
-    async def _update_feed(
-        self, guild_id: int, feed_key: str, api_data: dict[str, dict | None],
-    ) -> None:
+    async def _update_feed(self, guild_id: int, feed_key: str, api_data: dict[str, dict | None]) -> None:
         entry = self._guild_state(guild_id).get(feed_key)
         if not entry:
             return
         channel = self.get_channel(int(entry["channel_id"]))
         if not isinstance(channel, discord.TextChannel):
             return
-
         formatter = FORMATTERS.get(feed_key)
         if formatter is None:
-            log.warning("No formatter registered for feed %r", feed_key)
             return
         embeds = formatter(api_data)
         if not isinstance(embeds, list):
             embeds = [embeds]
         if not embeds:
             return
-
         ids = await self._ensure_messages(guild_id, feed_key, channel, at_least=len(embeds))
-
         kept_ids: list[int] = []
         for mid, embed in zip(ids, embeds):
             try:
-                message = await channel.fetch_message(mid)
-                await message.edit(embed=embed)
+                await (await channel.fetch_message(mid)).edit(embed=embed)
                 kept_ids.append(mid)
             except discord.NotFound:
-                log.info("Message %s for %s/%s vanished mid-edit; reposting.", mid, guild_id, feed_key)
                 new_msg = await channel.send(embed=embed)
                 try:
                     await new_msg.pin(reason="Live TTR feed pin")
                 except (discord.Forbidden, discord.HTTPException):
                     pass
                 kept_ids.append(new_msg.id)
-
         for mid in ids[len(embeds):]:
             try:
-                message = await channel.fetch_message(mid)
-                blank = discord.Embed(description="*(no data for this tier right now)*", color=0x95A5A6)
-                await message.edit(embed=blank)
+                await (await channel.fetch_message(mid)).edit(
+                    embed=discord.Embed(description="*(no data for this tier right now)*", color=0x95A5A6)
+                )
                 kept_ids.append(mid)
             except discord.NotFound:
                 pass
-
         self._set_state(guild_id, feed_key, channel.id, kept_ids)
 
-    # ---------- announcement broadcast helper -----------------------
+    # ------------------------------------------------------- announcement broadcast
 
     async def _broadcast_announcement(self, text: str) -> tuple[int, int, int]:
-        embed = discord.Embed(
-            title=ANNOUNCEMENT_TITLE,
-            description=text,
-            color=0xF1C40F,
-        )
+        embed = discord.Embed(title=ANNOUNCEMENT_TITLE, description=text, color=0xF1C40F)
         embed.set_footer(text=f"This message will auto-delete in {ANNOUNCEMENT_TTL_SECONDS // 60} minutes.")
-
         expires_at = time.time() + ANNOUNCEMENT_TTL_SECONDS
-        sent = 0
-        failed = 0
+        sent = failed = 0
         guilds_touched: set[int] = set()
         for guild_id_str, gs in list(self._guilds_block().items()):
             try:
@@ -666,17 +575,59 @@ class TTRBot(discord.Client):
                     await self._record_announcement(guild_id, channel.id, msg.id, expires_at)
                     sent += 1
                     guilds_touched.add(guild_id)
-                    log.info("Announcement posted to %s/#%s (msg=%s)", guild_id, channel.name, msg.id)
                 except (discord.Forbidden, discord.HTTPException) as e:
-                    log.warning("Failed to broadcast to %s/#%s: %s", guild_id, channel.name, e)
+                    log.warning("Broadcast failed for %s/#%s: %s", guild_id, channel.name, e)
                     failed += 1
         return sent, failed, len(guilds_touched)
 
-    # ---------- slash commands --------------------------------------
+    # ----------------------------------------------------------------- commands
 
     def _register_commands(self) -> None:
 
-        # ---- /laq-setup ----
+        # ── /laq-ttrinfo  (all users) ──────────────────────────────────────
+        @self.tree.command(
+            name="laq-ttrinfo",
+            description="Show current Toontown district, invasion, field office, and Silly Meter info.",
+        )
+        @app_commands.guild_only()
+        async def laq_ttrinfo(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if self._api is None:
+                await interaction.followup.send("API client not ready yet — try again in a moment.", ephemeral=True)
+                return
+            results = await asyncio.gather(
+                self._api.fetch("invasions"),
+                self._api.fetch("population"),
+                self._api.fetch("fieldoffices"),
+                self._api.fetch("sillymeter"),
+                return_exceptions=True,
+            )
+            invasions   = None if isinstance(results[0], BaseException) else results[0]
+            population  = None if isinstance(results[1], BaseException) else results[1]
+            fieldoffices = None if isinstance(results[2], BaseException) else results[2]
+            sillymeter  = None if isinstance(results[3], BaseException) else results[3]
+
+            info_embed  = format_information(invasions=invasions, population=population, fieldoffices=fieldoffices)
+            silly_embed = format_sillymeter(sillymeter)
+            await interaction.followup.send(embeds=[info_embed, silly_embed], ephemeral=True)
+
+        # ── /laq-ttrdoodle  (all users) ───────────────────────────────────
+        @self.tree.command(
+            name="laq-ttrdoodle",
+            description="Show the current Toontown doodle list with trait ratings.",
+        )
+        @app_commands.guild_only()
+        async def laq_ttrdoodle(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if self._api is None:
+                await interaction.followup.send("API client not ready yet — try again in a moment.", ephemeral=True)
+                return
+            doodle_data = await self._api.fetch("doodles")
+            embeds = format_doodles(doodle_data)
+            # Discord cap is 10 embeds per message; format_doodles returns 4.
+            await interaction.followup.send(embeds=embeds[:10], ephemeral=True)
+
+        # ── /laq-setup  (Manage Server) ───────────────────────────────────
         @self.tree.command(
             name="laq-setup",
             description="Create the TTR feed channels in this server and start tracking them.",
@@ -686,15 +637,14 @@ class TTRBot(discord.Client):
         async def laq_setup(interaction: discord.Interaction) -> None:
             guild = interaction.guild
             if guild is None:
-                await interaction.response.send_message("This command must be used inside a server.", ephemeral=True)
+                await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
                 return
             if not self.is_guild_allowed(guild.id):
                 await interaction.response.send_message(
-                    f"This server isn't on the bot's allowlist. Ask the bot owner to add `{guild.id}`.",
+                    f"This server isn't on the allowlist. Contact the bot owner to add `{guild.id}`.",
                     ephemeral=True,
                 )
                 return
-
             await interaction.response.defer(ephemeral=True, thinking=True)
             swept = 0
             try:
@@ -712,20 +662,19 @@ class TTRBot(discord.Client):
             except discord.Forbidden:
                 await interaction.followup.send(
                     "I'm missing permissions. Make sure I have **Manage Channels**, "
-                    "**Send Messages**, and **Embed Links** in this server, then try again.",
+                    "**Send Messages**, and **Embed Links**, then try again.",
                     ephemeral=True,
                 )
                 return
-
-            channels_msg = ", ".join(f"#{name}" for name in self.config.feeds().values())
+            channels_msg = ", ".join(f"#{n}" for n in self.config.feeds().values())
             tail = f" Cleaned up {swept} old message(s)." if swept else ""
             await interaction.followup.send(
-                f"All set! Tracking **{channels_msg}**. They'll refresh "
-                f"every {self.config.refresh_interval} seconds.{tail}",
+                f"All set! Tracking **{channels_msg}**. "
+                f"Refreshes every {self.config.refresh_interval}s.{tail}",
                 ephemeral=True,
             )
 
-        # ---- /laq-refresh ----
+        # ── /laq-refresh  (Manage Server) ─────────────────────────────────
         @self.tree.command(
             name="laq-refresh",
             description="Force an immediate refresh of all TTR feeds and remove old messages.",
@@ -740,13 +689,13 @@ class TTRBot(discord.Client):
                 try:
                     swept = await self._sweep_guild_stale(interaction.guild.id)
                 except Exception:
-                    log.exception("Stale-message sweep failed for %s", interaction.guild.id)
+                    log.exception("Sweep failed for %s", interaction.guild.id)
                 if swept:
                     await self._save_state()
             tail = f" Cleaned up {swept} old message(s)." if swept else ""
             await interaction.followup.send(f"Refreshed.{tail}", ephemeral=True)
 
-        # ---- /laq-teardown ----
+        # ── /laq-teardown  (Manage Server) ────────────────────────────────
         @self.tree.command(
             name="laq-teardown",
             description="Stop tracking TTR feeds here. Channels are kept; delete them manually if you want.",
@@ -756,29 +705,20 @@ class TTRBot(discord.Client):
         async def laq_teardown(interaction: discord.Interaction) -> None:
             guild = interaction.guild
             if guild is None:
-                await interaction.response.send_message("This command must be used inside a server.", ephemeral=True)
+                await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
                 return
             existed = self._guilds_block().pop(str(guild.id), None) is not None
             await self._save_state()
-            if existed:
-                await interaction.response.send_message(
-                    "Stopped tracking this server. The channels still exist; delete them manually if you'd like.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.response.send_message(
-                    "Nothing to tear down — this server isn't being tracked.",
-                    ephemeral=True,
-                )
+            msg = (
+                "Stopped tracking this server. Channels still exist; delete them manually if you'd like."
+                if existed else "Nothing to tear down — this server isn't being tracked."
+            )
+            await interaction.response.send_message(msg, ephemeral=True)
 
-        # ---- owner-only guard ----
+        # ── owner-only guard ──────────────────────────────────────────────
         async def _reject_non_owner(interaction: discord.Interaction) -> bool:
             if not self.config.is_owner(interaction.user.id):
-                log.info(
-                    "Rejecting non-owner %s (id=%s) on /%s",
-                    interaction.user, interaction.user.id,
-                    interaction.command.name if interaction.command else "?",
-                )
+                log.info("Rejecting non-owner %s (id=%s)", interaction.user, interaction.user.id)
                 await interaction.response.send_message(
                     f"This command is restricted to bot owners. "
                     f"Your user ID `{interaction.user.id}` is not in `BOT_OWNER_IDS`.",
@@ -787,10 +727,10 @@ class TTRBot(discord.Client):
                 return True
             return False
 
-        # ---- /laq-announce ----
+        # ── /laq-announce  (owner only) ───────────────────────────────────
         @self.tree.command(
             name="laq-announce",
-            description="Broadcast a message to every tracked server. Auto-deletes after 30 minutes. Owner only.",
+            description="Broadcast a message to every tracked server. Auto-deletes in 30 min. Owner only.",
         )
         @app_commands.describe(text="The announcement text to send to every tracked server.")
         async def laq_announce(interaction: discord.Interaction, text: str) -> None:
@@ -800,37 +740,30 @@ class TTRBot(discord.Client):
             if not text:
                 await interaction.response.send_message("Announcement text cannot be empty.", ephemeral=True)
                 return
-
             await interaction.response.defer(ephemeral=True, thinking=True)
             sent, failed, guilds_touched = await self._broadcast_announcement(text)
-            tracked_guilds = len(self._guilds_block())
+            tracked = len(self._guilds_block())
             ttl_min = ANNOUNCEMENT_TTL_SECONDS // 60
-
             if sent == 0:
-                if tracked_guilds == 0:
-                    msg = (
-                        "Broadcast sent **0** messages — no servers are currently tracked. "
-                        "An admin needs to run `/laq-setup` in each server first."
-                    )
-                else:
-                    msg = (
-                        f"Broadcast sent **0** messages despite {tracked_guilds} tracked server(s). "
-                        "The bot may have lost permission to post in the feed channels. "
-                        "Check the console log for details."
-                    )
+                msg = (
+                    "Broadcast sent **0** messages — no servers are tracked yet. "
+                    "Run `/laq-setup` in each server first."
+                    if tracked == 0 else
+                    f"Broadcast sent **0** messages despite {tracked} tracked server(s). "
+                    "Check the console log — the bot may have lost channel permissions."
+                )
             else:
                 msg = (
-                    f"Broadcast complete: **{sent}** message(s) posted across "
-                    f"**{guilds_touched}** server(s)"
+                    f"Broadcast complete: **{sent}** message(s) across **{guilds_touched}** server(s)"
                     + (f", {failed} failed" if failed else "")
-                    + f". Each post will auto-delete in {ttl_min} minutes."
+                    + f". Auto-deletes in {ttl_min} min."
                 )
             await interaction.followup.send(msg, ephemeral=True)
 
-        # ---- /laq-clear ----
+        # ── /laq-clear  (owner only) ──────────────────────────────────────
         @self.tree.command(
             name="laq-clear",
-            description="Delete every LanceAQuack message from this server and reset its tracking state. Owner only.",
+            description="Delete every LanceAQuack message in this server and reset tracking. Owner only.",
         )
         @app_commands.guild_only()
         async def laq_clear(interaction: discord.Interaction) -> None:
@@ -838,15 +771,12 @@ class TTRBot(discord.Client):
                 return
             guild = interaction.guild
             if guild is None:
-                await interaction.response.send_message("This command must be used inside a server.", ephemeral=True)
+                await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
                 return
-
             await interaction.response.defer(ephemeral=True, thinking=True)
-
             bot_id = self.user.id if self.user else 0
             deleted = 0
             no_history: list[str] = []
-
             for channel in list(guild.text_channels):
                 try:
                     async for msg in channel.history(limit=500):
@@ -855,31 +785,23 @@ class TTRBot(discord.Client):
                         try:
                             await msg.delete()
                             deleted += 1
-                        except discord.NotFound:
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                             pass
-                        except discord.Forbidden:
-                            log.debug("Forbidden deleting own msg %s in #%s", msg.id, channel.name)
-                            break
-                        except discord.HTTPException as e:
-                            log.debug("HTTP error deleting %s in #%s: %s", msg.id, channel.name, e)
                 except discord.Forbidden:
                     no_history.append(f"#{channel.name}")
                 except Exception:
                     log.exception("Sweep of #%s failed", channel.name)
-
             self._guilds_block().pop(str(guild.id), None)
             self._announcements()[:] = [
-                r for r in self._announcements()
-                if int(r.get("guild_id", 0)) != guild.id
+                r for r in self._announcements() if int(r.get("guild_id", 0)) != guild.id
             ]
             await self._save_state()
-
-            parts = [f"deleted **{deleted}** bot message(s)", "tracking state reset — run `/laq-setup` to start again"]
+            parts = [f"deleted **{deleted}** bot message(s)", "tracking reset — run `/laq-setup` to restart"]
             if no_history:
                 preview = ", ".join(no_history[:5])
                 more = f" (+{len(no_history) - 5} more)" if len(no_history) > 5 else ""
                 parts.append(f"couldn't read history in: {preview}{more}")
-            log.info("laq-clear in %s (id=%s): deleted=%d, skipped_channels=%d", guild.name, guild.id, deleted, len(no_history))
+            log.info("laq-clear in %s: deleted=%d, skipped=%d", guild.name, deleted, len(no_history))
             await interaction.followup.send("Done — " + "; ".join(parts) + ".", ephemeral=True)
 
 
@@ -888,7 +810,7 @@ def main() -> None:
     if not config.guild_allowlist and not config.owner_ids:
         log.warning(
             "Both GUILD_ALLOWLIST and BOT_OWNER_IDS are empty — the bot "
-            "cannot be invited to any server and has no admins. Edit your .env."
+            "cannot join any server and has no admins. Edit your .env."
         )
     bot = TTRBot(config)
     bot.run(config.token, log_handler=None)
