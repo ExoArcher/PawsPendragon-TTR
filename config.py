@@ -7,7 +7,7 @@ are global — the same defaults apply to every guild.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
@@ -42,17 +42,28 @@ def _parse_id_list(raw: str | None, *, var_name: str = "GUILD_ALLOWLIST") -> fro
     return frozenset(out)
 
 
+def _int_env(name: str, default: int) -> int:
+    """Read an int env var, falling back to *default* if missing or blank."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise RuntimeError(
+            f"Environment variable {name} must be an integer, got {raw!r}"
+        )
+
+
 @dataclass(frozen=True)
 class Config:
     token: str
-    # Guilds seeded into the runtime allowlist from .env. The bot also
-    # tracks a *runtime* allowlist persisted in state.json that admins
-    # mutate via /laq_guild_add and /laq_guild_remove. The effective
-    # allowlist is the union of both.
+    # Guilds seeded into the runtime allowlist from .env. The effective
+    # allowlist is the union of env + state.json.
     guild_allowlist: frozenset[int]
-    # Discord user IDs that may invoke owner-only admin commands
-    # (/laq_announce, /laq_guild_add, /laq_guild_remove). Empty == nobody.
-    owner_ids: frozenset[int]
+    # Discord user IDs that may use bot-admin commands (/laq-announce).
+    # Defaults to ExoArcher's ID if BOT_ADMIN_IDS is not set.
+    admin_ids: frozenset[int]
     refresh_interval: int
     user_agent: str
     category_name: str
@@ -66,10 +77,11 @@ class Config:
             guild_allowlist=_parse_id_list(
                 os.getenv("GUILD_ALLOWLIST"), var_name="GUILD_ALLOWLIST"
             ),
-            owner_ids=_parse_id_list(
-                os.getenv("BOT_OWNER_IDS"), var_name="BOT_OWNER_IDS"
+            admin_ids=_parse_id_list(
+                os.getenv("BOT_ADMIN_IDS") or "310233741354336257",
+                var_name="BOT_ADMIN_IDS",
             ),
-            refresh_interval=int(os.getenv("REFRESH_INTERVAL", "60")),
+            refresh_interval=_int_env("REFRESH_INTERVAL", default=90),
             user_agent=os.getenv(
                 "USER_AGENT", "ttr-discord-bot (https://github.com/)"
             ),
@@ -92,5 +104,5 @@ class Config:
         runtime allowlist in state.json before deciding to leave a guild."""
         return guild_id in self.guild_allowlist
 
-    def is_owner(self, user_id: int) -> bool:
-        return user_id in self.owner_ids
+    def is_admin(self, user_id: int) -> bool:
+        return user_id in self.admin_ids
