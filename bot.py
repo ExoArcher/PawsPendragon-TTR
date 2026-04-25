@@ -1,4 +1,5 @@
-"""TTR Discord bot — multi-guild live feeds for the public TTR APIs.
+# -*- coding: utf-8 -*-
+"""TTR Discord bot -- multi-guild live feeds for the public TTR APIs.
 
 How it works
 ------------
@@ -17,18 +18,18 @@ How it works
 
 Slash commands (all users)
 --------------------------
-``/ttrinfo``      — DM current district/invasion/sillymeter info.
-``/ttrdoodle``    — DM the current doodle list.
-``/laq-refresh``  — force an immediate refresh and sweep old messages.
+``/ttrinfo``      -- DM current district/invasion/sillymeter info.
+``/ttrdoodle``    -- DM the current doodle list.
+``/laq-refresh``  -- force an immediate refresh and sweep old messages.
 
 Slash commands (Manage Channels + Manage Messages)
 ---------------------------------------------------
-``/laq-setup``    — create channels and start tracking this guild.
-``/laq-teardown`` — stop tracking this guild (channels are NOT deleted).
+``/laq-setup``    -- create channels and start tracking this guild.
+``/laq-teardown`` -- stop tracking this guild (channels are NOT deleted).
 
 Slash commands (bot owner only)
 --------------------------------
-``/laq-announce`` — broadcast a message to every tracked guild.
+``/laq-announce`` -- broadcast a message to every tracked guild.
 
 Panel announcements
 -------------------
@@ -38,7 +39,7 @@ within 90 seconds, broadcasts it to every tracked guild, and deletes it.
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# Self-update from GitHub — runs before anything else.
+# Self-update from GitHub -- runs before anything else.
 # Clones the repo on first boot; pulls on every subsequent boot.
 # If new files were pulled, restarts the process so fresh code is used.
 # Safe to remove if you prefer manual file uploads via the panel.
@@ -52,7 +53,7 @@ _GIT_REPO = "https://github.com/ExoArcher/LanceAQuack-TTR"
 
 try:
     if not _os.path.isdir(_os.path.join(_BOT_DIR, ".git")):
-        print("[auto-update] No .git found — cloning repo...", flush=True)
+        print("[auto-update] No .git found -- cloning repo...", flush=True)
         _subprocess.run(
             ["git", "clone", _GIT_REPO, "."],
             cwd=_BOT_DIR, check=True,
@@ -103,7 +104,7 @@ ANNOUNCEMENT_TTL_SECONDS = 30 * 60
 # Shown to any guild owner whose server fails the allowlist check.
 CLOSED_ACCESS_MSG = (
     "Hello! Thank you for your enthusiasm to have me join your community! "
-    "At this time I am only in closed access — please DM **ExoArcher** on "
+    "At this time I am only in closed access -- please DM **ExoArcher** on "
     "Discord (user ID `310233741354336257`) to request access."
 )
 
@@ -284,10 +285,10 @@ class TTRBot(discord.Client):
           2. Copy the in-memory global tree and push → registers new /laq-* commands.
         """
         try:
-            # Phase 1 — nuke everything Discord knows about this guild.
+            # Phase 1 -- nuke everything Discord knows about this guild.
             self.tree.clear_commands(guild=guild)
             await self.tree.sync(guild=guild)
-            # Phase 2 — register the current command set.
+            # Phase 2 -- register the current command set.
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
             log.info("Command sync OK for %s (id=%s)", guild.name, guild.id)
@@ -320,7 +321,7 @@ class TTRBot(discord.Client):
                 log.info("Creating channel #%s in %s", channel_name, guild.name)
                 channel = await guild.create_text_channel(
                     channel_name, category=category,
-                    topic=f"Live TTR {key} feed — auto-updated by bot.",
+                    topic=f"Live TTR {key} feed -- auto-updated by bot.",
                 )
             await self._ensure_messages(guild.id, key, channel, at_least=1)
         await self._save_state()
@@ -418,7 +419,7 @@ class TTRBot(discord.Client):
                 log.exception("Startup cleanup: orphan scan failed in %s/#%s", guild_id, getattr(channel, "name", "?"))
 
         if cleared == 0 and failed == 0:
-            log.info("Startup cleanup: no stale messages found — channels are clean.")
+            log.info("Startup cleanup: no stale messages found -- channels are clean.")
         elif failed == 0:
             log.info("Startup cleanup: cleared %d stale message(s) successfully.", cleared)
         else:
@@ -503,7 +504,7 @@ class TTRBot(discord.Client):
             return
         if not text:
             return
-        log.info("Panel announcement detected — broadcasting: %s", text[:80])
+        log.info("Panel announcement detected -- broadcasting: %s", text[:80])
         sent, failed, guilds = await self._broadcast_announcement(text)
         log.info("Panel announcement: %d msg(s) across %d guild(s), %d failed.", sent, guilds, failed)
 
@@ -670,7 +671,7 @@ class TTRBot(discord.Client):
 
     def _register_commands(self) -> None:
 
-        # ── /ttrinfo  (all users) ──────────────────────────────────────────
+        # -- /ttrinfo  (all users) ------------------------------------------
         @self.tree.command(
             name="ttrinfo",
             description="[User Command] See current Toontown district, invasion, field office, and Silly Meter info.",
@@ -679,7 +680,7 @@ class TTRBot(discord.Client):
         async def ttrinfo(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             if self._api is None:
-                await interaction.followup.send("API client not ready yet — try again in a moment.", ephemeral=True)
+                await interaction.followup.send("API client not ready yet -- try again in a moment.", ephemeral=True)
                 return
             results = await asyncio.gather(
                 self._api.fetch("invasions"),
@@ -701,11 +702,11 @@ class TTRBot(discord.Client):
                 await interaction.followup.send("Check your DMs! 📬", ephemeral=True)
             except discord.Forbidden:
                 await interaction.followup.send(
-                    "I couldn't DM you — please enable DMs from server members and try again.",
+                    "I couldn't DM you -- please enable DMs from server members and try again.",
                     ephemeral=True,
                 )
 
-        # ── /ttrdoodle  (all users) ────────────────────────────────────────
+        # -- /ttrdoodle  (all users) ----------------------------------------
         @self.tree.command(
             name="ttrdoodle",
             description="[User Command] See the current Toontown doodle list with trait ratings.",
@@ -714,7 +715,7 @@ class TTRBot(discord.Client):
         async def ttrdoodle(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             if self._api is None:
-                await interaction.followup.send("API client not ready yet — try again in a moment.", ephemeral=True)
+                await interaction.followup.send("API client not ready yet -- try again in a moment.", ephemeral=True)
                 return
             doodle_data = await self._api.fetch("doodles")
             embeds = format_doodles(doodle_data)
@@ -724,11 +725,11 @@ class TTRBot(discord.Client):
                 await interaction.followup.send("Check your DMs! 📬", ephemeral=True)
             except discord.Forbidden:
                 await interaction.followup.send(
-                    "I couldn't DM you — please enable DMs from server members and try again.",
+                    "I couldn't DM you -- please enable DMs from server members and try again.",
                     ephemeral=True,
                 )
 
-        # ── /laq-setup  (Manage Channels + Manage Messages) ──────────────
+        # -- /laq-setup  (Manage Channels + Manage Messages) --------------
         @self.tree.command(
             name="laq-setup",
             description="[Server Admin Command] Create the TTR feed channels in this server and start tracking them.",
@@ -775,7 +776,7 @@ class TTRBot(discord.Client):
                 ephemeral=True,
             )
 
-        # ── /laq-refresh  (all users) ─────────────────────────────────────
+        # -- /laq-refresh  (all users) -------------------------------------
         @self.tree.command(
             name="laq-refresh",
             description="[User Command] Force an immediate refresh of all TTR feeds and remove old messages.",
@@ -795,7 +796,7 @@ class TTRBot(discord.Client):
             tail = f" Cleaned up {swept} old message(s)." if swept else ""
             await interaction.followup.send(f"Refreshed.{tail}", ephemeral=True)
 
-        # ── /laq-teardown  (Manage Channels + Manage Messages) ───────────
+        # -- /laq-teardown  (Manage Channels + Manage Messages) -----------
         @self.tree.command(
             name="laq-teardown",
             description="[Server Admin Command] Stop TTR feed tracking. Channels are kept; delete them manually if needed.",
@@ -811,11 +812,11 @@ class TTRBot(discord.Client):
             await self._save_state()
             msg = (
                 "Stopped tracking this server. Channels still exist; delete them manually if you'd like."
-                if existed else "Nothing to tear down — this server isn't being tracked."
+                if existed else "Nothing to tear down -- this server isn't being tracked."
             )
             await interaction.response.send_message(msg, ephemeral=True)
 
-        # ── admin-only guard ──────────────────────────────────────────────
+        # -- admin-only guard ----------------------------------------------
         async def _reject_non_admin(interaction: discord.Interaction) -> bool:
             if not self.config.is_admin(interaction.user.id):
                 log.info("Rejecting non-admin %s (id=%s)", interaction.user, interaction.user.id)
@@ -827,4 +828,4 @@ class TTRBot(discord.Client):
                 return True
             return False
 
-        # ── /laq-announce  (owner only) ─�
+        # -- /laq-announce  (owner only) -
