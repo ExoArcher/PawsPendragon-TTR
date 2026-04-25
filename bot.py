@@ -343,8 +343,21 @@ class TTRBot(discord.Client):
         ]
 
     async def _cleanup_announcements_on_startup(self) -> None:
-        for record in list(self._announcements()):
-            await self._delete_announcement_record(record)
+        cleared = 0
+        failed = 0
+
+        # Delete any tracked announcement messages from the previous session.
+        stale_records = list(self._announcements())
+        if stale_records:
+            log.info("Startup cleanup: found %d tracked announcement(s) to clear.", len(stale_records))
+        for record in stale_records:
+            try:
+                await self._delete_announcement_record(record)
+                cleared += 1
+            except Exception:
+                failed += 1
+
+        # Scan information channels for orphaned announcement embeds not in state.
         for guild_id_str, gs in list(self._guilds_block().items()):
             try:
                 guild_id = int(guild_id_str)
@@ -363,11 +376,23 @@ class TTRBot(discord.Client):
                     if msg.embeds and ANNOUNCEMENT_TITLE in (msg.embeds[0].title or ""):
                         try:
                             await msg.delete()
-                            log.info("Deleted orphan announcement %s in %s", msg.id, guild_id)
-                        except (discord.Forbidden, discord.NotFound):
-                            pass
+                            log.info("Startup cleanup: deleted orphan announcement %s in guild %s", msg.id, guild_id)
+                            cleared += 1
+                        except (discord.Forbidden, discord.NotFound) as e:
+                            log.warning("Startup cleanup: could not delete orphan %s: %s", msg.id, e)
+                            failed += 1
             except Exception:
-                log.exception("Orphan scan failed in %s/#%s", guild_id, getattr(channel, "name", "?"))
+                log.exception("Startup cleanup: orphan scan failed in %s/#%s", guild_id, getattr(channel, "name", "?"))
+
+        if cleared == 0 and failed == 0:
+            log.info("Startup cleanup: no stale messages found — channels are clean.")
+        elif failed == 0:
+            log.info("Startup cleanup: cleared %d stale message(s) successfully.", cleared)
+        else:
+            log.warning(
+                "Startup cleanup: cleared %d message(s), but %d could not be deleted (check permissions).",
+                cleared, failed,
+            )
 
     # --------------------------------------------------------- stale-message sweep
 
@@ -506,6 +531,8 @@ class TTRBot(discord.Client):
             return
         async with self._refresh_lock:
             api_data = await self._fetch_all()
+            total_messages = 0
+            guilds_updated: set[int] = set()
             for guild_id_str in list(self._guilds_block().keys()):
                 try:
                     guild_id = int(guild_id_str)
@@ -515,32 +542,45 @@ class TTRBot(discord.Client):
                     continue
                 for feed_key in self.config.feeds():
                     try:
-                        await self._update_feed(guild_id, feed_key, api_data)
+                        updated = await self._update_feed(guild_id, feed_key, api_data)
+                        if updated:
+                            total_messages += updated
+                            guilds_updated.add(guild_id)
                     except Exception:
                         log.exception("Failed updating %s/%s", guild_id, feed_key)
+            if total_messages:
+                log.info(
+                    "Embed refresh: %d message(s) updated across %d server(s)",
+                    total_messages, len(guilds_updated),
+                )
+            else:
+                log.info("Embed refresh: no tracked servers to update.")
             await self._save_state()
 
-    async def _update_feed(self, guild_id: int, feed_key: str, api_data: dict[str, dict | None]) -> None:
+    async def _update_feed(self, guild_id: int, feed_key: str, api_data: dict[str, dict | None]) -> int:
+        """Update a single feed for a guild. Returns the number of messages edited/sent."""
         entry = self._guild_state(guild_id).get(feed_key)
         if not entry:
-            return
+            return 0
         channel = self.get_channel(int(entry["channel_id"]))
         if not isinstance(channel, discord.TextChannel):
-            return
+            return 0
         formatter = FORMATTERS.get(feed_key)
         if formatter is None:
-            return
+            return 0
         embeds = formatter(api_data)
         if not isinstance(embeds, list):
             embeds = [embeds]
         if not embeds:
-            return
+            return 0
         ids = await self._ensure_messages(guild_id, feed_key, channel, at_least=len(embeds))
         kept_ids: list[int] = []
+        edited = 0
         for mid, embed in zip(ids, embeds):
             try:
                 await (await channel.fetch_message(mid)).edit(embed=embed)
                 kept_ids.append(mid)
+                edited += 1
             except discord.NotFound:
                 new_msg = await channel.send(embed=embed)
                 try:
@@ -548,15 +588,18 @@ class TTRBot(discord.Client):
                 except (discord.Forbidden, discord.HTTPException):
                     pass
                 kept_ids.append(new_msg.id)
+                edited += 1
         for mid in ids[len(embeds):]:
             try:
                 await (await channel.fetch_message(mid)).edit(
                     embed=discord.Embed(description="*(no data for this tier right now)*", color=0x95A5A6)
                 )
                 kept_ids.append(mid)
+                edited += 1
             except discord.NotFound:
                 pass
         self._set_state(guild_id, feed_key, channel.id, kept_ids)
+        return edited
 
     # ------------------------------------------------------- announcement broadcast
 
