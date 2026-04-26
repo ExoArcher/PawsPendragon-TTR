@@ -106,6 +106,7 @@ STATE_VERSION = 2
 ANNOUNCE_FILE = Path(__file__).with_name("panel_announce.txt")
 TEARDOWN_LOG   = Path(__file__).with_name("teardown_log.txt")
 WELCOMED_FILE  = Path(__file__).with_name("welcomed_users.json")
+BANNED_FILE    = Path(__file__).with_name("banned_users.json")
 ANNOUNCEMENT_TITLE = "📢 LAQ Bot Announcement"
 ANNOUNCEMENT_TTL_SECONDS = 30 * 60
 
@@ -615,6 +616,52 @@ class TTRBot(discord.Client):
         except discord.Forbidden:
             pass  # DMs closed, skip silently
 
+
+    # ------------------------------------------------- ban system
+
+    def _load_banned(self) -> dict[str, dict]:
+        """Return banlist as {str(user_id): {reason, banned_at, banned_by, banned_by_id}}."""
+        try:
+            if BANNED_FILE.exists():
+                return json.loads(BANNED_FILE.read_text())
+        except Exception:
+            pass
+        return {}
+
+    def _save_banned(self, banned: dict[str, dict]) -> None:
+        try:
+            BANNED_FILE.write_text(json.dumps(banned, indent=2))
+        except Exception as exc:
+            log.warning("Could not save banned_users.json: %s", exc)
+
+    def _is_banned(self, user_id: int) -> dict | None:
+        """Return the ban record if the user is banned, else None."""
+        return self._load_banned().get(str(user_id))
+
+    async def _reject_if_banned(self, interaction: discord.Interaction) -> bool:
+        """Send an ephemeral rejection and return True if the user is banned."""
+        record = self._is_banned(interaction.user.id)
+        if record is None:
+            return False
+        reason   = record.get("reason") or "No reason given."
+        banned_at = record.get("banned_at", "unknown date")
+        msg = (
+            ":no_entry: **You have been banned from using LanceAQuack TTR.**\n\n"
+            f"**Reason:** {reason}\n"
+            f"**Date:** {banned_at}\n\n"
+            "If you believe this is a mistake, contact the bot owner."
+        )
+        try:
+            await interaction.response.send_message(msg, ephemeral=True)
+        except discord.InteractionResponded:
+            await interaction.followup.send(msg, ephemeral=True)
+        log.info(
+            "Blocked banned user %s (id=%s) from %s",
+            interaction.user, interaction.user.id,
+            interaction.command and interaction.command.name,
+        )
+        return True
+
     # ------------------------------------------------- maintenance broadcast
 
     async def _broadcast_maintenance(self) -> None:
@@ -793,6 +840,8 @@ class TTRBot(discord.Client):
         @app_commands.allowed_installs(guilds=True, users=True)
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def ttrinfo(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
             await interaction.response.defer(ephemeral=True, thinking=True)
             await self._maybe_welcome(interaction.user)
             if self._api is None:
@@ -830,6 +879,8 @@ class TTRBot(discord.Client):
         @app_commands.allowed_installs(guilds=True, users=True)
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def doodleinfo(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
             await interaction.response.defer(ephemeral=True, thinking=True)
             await self._maybe_welcome(interaction.user)
             if self._api is None:
@@ -855,6 +906,8 @@ class TTRBot(discord.Client):
         @app_commands.allowed_installs(guilds=True, users=True)
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def helpme(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
             msg = (
                 "**LanceAQuack TTR -- Available Commands** :duck:\n\n"
                 ":warning: *This bot is currently in Early Access -- features are still "
@@ -863,6 +916,9 @@ class TTRBot(discord.Client):
                 "field offices, and Silly Meter status sent directly to your DMs.\n\n"
                 "`/doodleinfo` -- Get the full Toontown doodle list with trait ratings and a "
                 "buying guide sent directly to your DMs.\n\n"
+                "`/invite-app` -- Get the link to add LanceAQuack TTR to your Discord account.\n\n"
+                "`/invite-server` -- Get the link to add LanceAQuack TTR to a server.\n\n"
+                "`/introduce @user` -- Send a new user a full introduction to the bot.\n\n"
                 "`/helpme` -- Show this message again."
             )
             try:
@@ -870,6 +926,310 @@ class TTRBot(discord.Client):
                 await interaction.response.send_message("Check your DMs! :mailbox_with_mail:", ephemeral=True)
             except discord.Forbidden:
                 await interaction.response.send_message(msg, ephemeral=True)
+
+
+        # -- /invite-app  (all users, guild + user install) -----------------
+        @self.tree.command(
+            name="invite-app",
+            description="[User Command] Add LanceAQuack TTR to your personal Discord account.",
+        )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def invite_app(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
+            link = (
+                "https://discord.com/oauth2/authorize"
+                "?client_id=1496971496709689654"
+                "&integration_type=1"
+                "&scope=applications.commands"
+            )
+            msg = (
+                f":link: **Add LanceAQuack TTR to your Discord account**\n"
+                f"{link}\n"
+                f"\u200b\n"
+                f"**About the bot**\n"
+                f"LanceAQuack TTR is a Toontown Rewritten companion bot. "
+                f"It delivers live game data -- district populations, cog invasions, "
+                f"active field offices, Silly Meter status, and the full doodle guide -- "
+                f"directly to your DMs from anywhere in Discord.\n"
+                f"\u200b\n"
+                f"**Permissions requested**\n"
+                f"This is a **User App install** -- it does **not** join your server and "
+                f"requires **no server permissions**. "
+                f"It only adds the slash commands `/ttrinfo`, `/doodleinfo`, `/helpme`, "
+                f"`/invite-app`, `/invite-server`, and `/introduce` to your personal Discord account, "
+                f"usable in any server, DM, or group chat."
+            )
+            try:
+                await interaction.user.send(msg)
+                await interaction.response.send_message("Check your DMs! :mailbox_with_mail:", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message(msg, ephemeral=True)
+
+        # -- /invite-server  (all users, guild + user install) ---------------
+        @self.tree.command(
+            name="invite-server",
+            description="[User Command] Add LanceAQuack TTR to a Discord server.",
+        )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def invite_server(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
+            link = (
+                "https://discord.com/oauth2/authorize"
+                "?client_id=1496971496709689654"
+                "&permissions=17600776062032"
+                "&scope=bot+applications.commands"
+            )
+            msg = (
+                f":link: **Add LanceAQuack TTR to a server**\n"
+                f"{link}\n"
+                f"\u200b\n"
+                f"**About the bot**\n"
+                f"LanceAQuack TTR is a Toontown Rewritten companion bot. "
+                f"When added to a server it automatically creates a **#tt-information** "
+                f"channel and a **#tt-doodles** channel. These are kept up to date "
+                f"with live TTR data: district populations, cog invasions, field offices, "
+                f"the Silly Meter, and the full doodle buying guide.\n"
+                f"\u200b\n"
+                f"**Permissions requested**\n"
+                f"\u2022 **Manage Channels** -- create the `#tt-information` and `#tt-doodles` channels on setup.\n"
+                f"\u2022 **Send Messages** -- post live game data into those channels.\n"
+                f"\u2022 **Manage Messages** -- edit and clean up its own posts as data updates.\n"
+                f"\u2022 **Embed Links** -- display rich embeds with formatted game information.\n"
+                f"\u2022 **Read Message History** -- locate and update previously posted embeds.\n"
+                f"\u2022 **View Channels** -- see the channels it manages.\n"
+                f"\nThe bot does **not** read general chat messages and only operates in the channels it creates."
+            )
+            try:
+                await interaction.user.send(msg)
+                await interaction.response.send_message("Check your DMs! :mailbox_with_mail:", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message(msg, ephemeral=True)
+
+        # -- /introduce  (all users, guild + user install) -------------------
+        @self.tree.command(
+            name="introduce",
+            description="[User Command] Send a new user a full introduction to LanceAQuack TTR.",
+        )
+        @app_commands.describe(user="The Discord user you want to introduce to the bot.")
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def introduce(interaction: discord.Interaction, user: discord.User) -> None:
+            if await self._reject_if_banned(interaction):
+                return
+            app_link = (
+                "https://discord.com/oauth2/authorize"
+                "?client_id=1496971496709689654"
+                "&integration_type=1"
+                "&scope=applications.commands"
+            )
+            server_link = (
+                "https://discord.com/oauth2/authorize"
+                "?client_id=1496971496709689654"
+                "&permissions=17600776062032"
+                "&scope=bot+applications.commands"
+            )
+            msg = (
+                f"\U0001f44b **Hey {user.display_name}! {interaction.user.display_name} wanted to introduce you to LanceAQuack TTR.** :duck:\n"
+                f"\u200b\n"
+                f"**What is LanceAQuack TTR?**\n"
+                f"LanceAQuack TTR is a Toontown Rewritten companion bot that delivers live game data straight to Discord. "
+                f"It tracks district populations, cog invasions, active field offices, the global Silly Meter, "
+                f"and a full doodle buying guide with trait ratings -- all pulled directly from the TTR API and "
+                f"updated automatically.\n"
+                f"\u200b\n"
+                f"**Available Commands**\n"
+                f"`/ttrinfo` -- DMs you the current district populations, active cog invasions, "
+                f"open field offices, and the live Silly Meter status.\n\n"
+                f"`/doodleinfo` -- DMs you the full doodle availability list for every "
+                f"playground, including trait ratings and a buying guide.\n\n"
+                f"`/invite-app` -- DMs you the link to add the bot to your personal Discord account.\n\n"
+                f"`/invite-server` -- DMs you the link to add the bot to a server you manage.\n\n"
+                f"`/introduce @user` -- Send this intro message to someone new.\n\n"
+                f"`/helpme` -- Show the command list again anytime.\n"
+                f"\u200b\n"
+                f"**Add it to your account** *(no server needed)*\n"
+                f"{app_link}\n"
+                f"Once added, all commands work in any server, DM, or group chat -- "
+                f"no server permissions required.\n"
+                f"\u200b\n"
+                f"**Add it to a server**\n"
+                f"{server_link}\n"
+                f"The bot will create a **#tt-information** channel and a **#tt-doodles** channel "
+                f"and keep them live with TTR data automatically.\n"
+                f"\u200b\n"
+                f"**Server Permissions**\n"
+                f"\u2022 **Manage Channels** -- create the `#tt-information` and `#tt-doodles` channels on setup.\n"
+                f"\u2022 **Send Messages** -- post live game data into those channels.\n"
+                f"\u2022 **Manage Messages** -- edit and clean up its own posts as data updates.\n"
+                f"\u2022 **Embed Links** -- display rich embeds with formatted game information.\n"
+                f"\u2022 **Read Message History** -- locate and update previously posted embeds.\n"
+                f"\u2022 **View Channels** -- see the channels it manages.\n"
+                f"\nThe bot does **not** read general chat messages and only operates in the channels it creates."
+            )
+            sent_to_user = False
+            try:
+                await user.send(msg)
+                sent_to_user = True
+            except discord.Forbidden:
+                pass
+            if sent_to_user:
+                await interaction.response.send_message(
+                    f":mailbox_with_mail: Sent {user.mention} an introduction!", ephemeral=True
+                )
+            else:
+                try:
+                    await interaction.response.send_message(
+                        f"{user.mention} \u2014 {interaction.user.display_name} wanted to introduce you to "
+                        f"LanceAQuack TTR, but your DMs are closed so here it is:\n\n" + msg
+                    )
+                except discord.Forbidden:
+                    await interaction.response.send_message(
+                        f"Couldn't DM {user.mention} (DMs are closed) and couldn't post here either. "
+                        f"Ask them to open their DMs or share the intro yourself with `/helpme`.",
+                        ephemeral=True,
+                    )
+
+        # -- /laq-ban  (bot admins only) -------------------------------------
+        @self.tree.command(
+            name="laq-ban",
+            description="[Bot Admin Command] Ban a user from all LanceAQuack TTR commands by Discord ID.",
+        )
+        @app_commands.describe(
+            user_id="The Discord user ID to ban.",
+            reason="Reason for the ban (shown to the user and stored in the log).",
+        )
+        @app_commands.guild_only()
+        async def laq_ban(interaction: discord.Interaction, user_id: str, reason: str = "No reason provided.") -> None:
+            if not self.config.is_admin(interaction.user.id):
+                await interaction.response.send_message(
+                    f"This command is restricted to bot admins. Your ID `{interaction.user.id}` is not in `BOT_ADMIN_IDS`.",
+                    ephemeral=True,
+                )
+                return
+            user_id = user_id.strip()
+            if not user_id.isdigit():
+                await interaction.response.send_message(
+                    "Invalid user ID -- must be a numeric Discord snowflake (e.g. `123456789012345678`).",
+                    ephemeral=True,
+                )
+                return
+            uid = int(user_id)
+            banned = self._load_banned()
+            if user_id in banned:
+                await interaction.response.send_message(
+                    f"User `{user_id}` is already banned.\n"
+                    f"**Current reason:** {banned[user_id].get('reason', 'none')}\n"
+                    f"Use `/laq-unban` first if you want to update the record.",
+                    ephemeral=True,
+                )
+                return
+            import time as _time
+            ts = _time.strftime("%Y-%m-%d %H:%M:%S UTC", _time.gmtime())
+            banned[user_id] = {
+                "reason":      reason.strip(),
+                "banned_at":   ts,
+                "banned_by":   str(interaction.user),
+                "banned_by_id": interaction.user.id,
+            }
+            self._save_banned(banned)
+            log.warning(
+                "BANNED user %s by %s (%s): %s",
+                user_id, interaction.user, interaction.user.id, reason,
+            )
+            # Attempt to resolve a username for the confirmation message
+            display = f"`{user_id}`"
+            try:
+                fetched = await self.fetch_user(uid)
+                display = f"{fetched} (`{user_id}`)"
+            except Exception:
+                pass
+            await interaction.response.send_message(
+                f":no_entry: **Banned** {display}\n"
+                f"**Reason:** {reason}\n"
+                f"**Banned at:** {ts}\n\n"
+                f"They will be blocked from all bot commands immediately.",
+                ephemeral=True,
+            )
+
+        # -- /laq-unban  (bot admins only) -----------------------------------
+        @self.tree.command(
+            name="laq-unban",
+            description="[Bot Admin Command] Remove a user's ban from LanceAQuack TTR by Discord ID.",
+        )
+        @app_commands.describe(user_id="The Discord user ID to unban.")
+        @app_commands.guild_only()
+        async def laq_unban(interaction: discord.Interaction, user_id: str) -> None:
+            if not self.config.is_admin(interaction.user.id):
+                await interaction.response.send_message(
+                    f"This command is restricted to bot admins. Your ID `{interaction.user.id}` is not in `BOT_ADMIN_IDS`.",
+                    ephemeral=True,
+                )
+                return
+            user_id = user_id.strip()
+            if not user_id.isdigit():
+                await interaction.response.send_message(
+                    "Invalid user ID -- must be a numeric Discord snowflake.",
+                    ephemeral=True,
+                )
+                return
+            banned = self._load_banned()
+            record = banned.pop(user_id, None)
+            if record is None:
+                await interaction.response.send_message(
+                    f"User `{user_id}` is not in the ban list.", ephemeral=True
+                )
+                return
+            self._save_banned(banned)
+            log.info("UNBANNED user %s by %s (%s)", user_id, interaction.user, interaction.user.id)
+            display = f"`{user_id}`"
+            try:
+                fetched = await self.fetch_user(int(user_id))
+                display = f"{fetched} (`{user_id}`)"
+            except Exception:
+                pass
+            await interaction.response.send_message(
+                f":white_check_mark: **Unbanned** {display}\n"
+                f"They can now use all bot commands again.",
+                ephemeral=True,
+            )
+
+        # -- /laq-banlist  (bot admins only) ---------------------------------
+        @self.tree.command(
+            name="laq-banlist",
+            description="[Bot Admin Command] View all users currently banned from LanceAQuack TTR.",
+        )
+        @app_commands.guild_only()
+        async def laq_banlist(interaction: discord.Interaction) -> None:
+            if not self.config.is_admin(interaction.user.id):
+                await interaction.response.send_message(
+                    f"This command is restricted to bot admins. Your ID `{interaction.user.id}` is not in `BOT_ADMIN_IDS`.",
+                    ephemeral=True,
+                )
+                return
+            banned = self._load_banned()
+            if not banned:
+                await interaction.response.send_message(
+                    ":white_check_mark: The ban list is currently empty.", ephemeral=True
+                )
+                return
+            lines = [f":no_entry: **LanceAQuack TTR -- Banned Users** ({len(banned)} total)\n"]
+            for uid_str, rec in banned.items():
+                reason   = rec.get("reason", "No reason given.")
+                banned_at = rec.get("banned_at", "unknown")
+                banned_by = rec.get("banned_by", "unknown")
+                lines.append(
+                    f"\u2022 **ID:** `{uid_str}` | **Banned:** {banned_at} | "
+                    f"**By:** {banned_by} | **Reason:** {reason}"
+                )
+            msg = "\n".join(lines)
+            # Discord message limit safety
+            if len(msg) > 1900:
+                msg = msg[:1900] + "\n... (truncated, check banned_users.json for full list)"
+            await interaction.response.send_message(msg, ephemeral=True)
 
         # -- /laq-setup  (Manage Channels + Manage Messages) --------------
         @self.tree.command(
