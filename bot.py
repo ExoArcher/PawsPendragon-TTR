@@ -629,7 +629,7 @@ class TTRBot(discord.Client):
                     pass
                 kept_ids.append(new_msg.id)
                 edited += 1
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(3.0)
         for mid in ids[len(embeds):]:
             try:
                 await (await channel.fetch_message(mid)).edit(
@@ -639,7 +639,7 @@ class TTRBot(discord.Client):
                 edited += 1
             except discord.NotFound:
                 pass
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(3.0)
         self._set_state(guild_id, feed_key, channel.id, kept_ids)
         return edited
 
