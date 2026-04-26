@@ -103,7 +103,8 @@ log = logging.getLogger("ttr-bot")
 STATE_FILE = Path(__file__).with_name("state.json")
 STATE_VERSION = 2
 ANNOUNCE_FILE = Path(__file__).with_name("panel_announce.txt")
-TEARDOWN_LOG  = Path(__file__).with_name("teardown_log.txt")
+TEARDOWN_LOG   = Path(__file__).with_name("teardown_log.txt")
+WELCOMED_FILE  = Path(__file__).with_name("welcomed_users.json")
 ANNOUNCEMENT_TITLE = "📢 LAQ Bot Announcement"
 ANNOUNCEMENT_TTL_SECONDS = 30 * 60
 
@@ -566,6 +567,46 @@ class TTRBot(discord.Client):
             for k, r in zip(self._API_KEYS, results)
         }
 
+    # ------------------------------------------------- welcome DM (user install)
+
+    def _load_welcomed(self) -> set[int]:
+        """Return set of user IDs that have already received the welcome DM."""
+        try:
+            if WELCOMED_FILE.exists():
+                return set(json.loads(WELCOMED_FILE.read_text()))
+        except Exception:
+            pass
+        return set()
+
+    def _save_welcomed(self, welcomed: set[int]) -> None:
+        try:
+            WELCOMED_FILE.write_text(json.dumps(sorted(welcomed)))
+        except Exception as exc:
+            log.warning("Could not save welcomed_users.json: %s", exc)
+
+    async def _maybe_welcome(self, user: discord.abc.User) -> None:
+        """Send a one-time welcome DM the first time a user uses the bot."""
+        welcomed = self._load_welcomed()
+        if user.id in welcomed:
+            return
+        msg = (
+            "**Thanks for installing LanceAQuack TTR!** :duck:\n\n"
+            ":warning: *This bot is currently in Early Access -- features are still "
+            "being added and things may change.*\n\n"
+            "**Available Commands:**\n"
+            "`/ttrinfo` -- Get the current Toontown district populations, cog invasions, "
+            "field offices, and Silly Meter status sent directly to your DMs.\n\n"
+            "`/doodleinfo` -- Get the full Toontown doodle list with trait ratings and a "
+            "buying guide sent directly to your DMs."
+        )
+        try:
+            await user.send(msg)
+            welcomed.add(user.id)
+            self._save_welcomed(welcomed)
+            log.info("Sent welcome DM to user %s (id=%s)", user, user.id)
+        except discord.Forbidden:
+            pass  # DMs closed, skip silently
+
     async def _refresh_once(self) -> None:
         if self._api is None:
             return
@@ -686,6 +727,7 @@ class TTRBot(discord.Client):
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def ttrinfo(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._maybe_welcome(interaction.user)
             if self._api is None:
                 await interaction.followup.send("API client not ready yet -- try again in a moment.", ephemeral=True)
                 return
@@ -722,6 +764,7 @@ class TTRBot(discord.Client):
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def doodleinfo(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._maybe_welcome(interaction.user)
             if self._api is None:
                 await interaction.followup.send("API client not ready yet -- try again in a moment.", ephemeral=True)
                 return
@@ -736,6 +779,30 @@ class TTRBot(discord.Client):
                     "I couldn't DM you -- please enable DMs from server members and try again.",
                     ephemeral=True,
                 )
+
+        # -- /helpme  (all users, guild + user install) ----------------------
+        @self.tree.command(
+            name="helpme",
+            description="[User Command] Show available bot commands and descriptions.",
+        )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def helpme(interaction: discord.Interaction) -> None:
+            msg = (
+                "**LanceAQuack TTR -- Available Commands** :duck:\n\n"
+                ":warning: *This bot is currently in Early Access -- features are still "
+                "being added and things may change.*\n\n"
+                "`/ttrinfo` -- Get the current Toontown district populations, cog invasions, "
+                "field offices, and Silly Meter status sent directly to your DMs.\n\n"
+                "`/doodleinfo` -- Get the full Toontown doodle list with trait ratings and a "
+                "buying guide sent directly to your DMs.\n\n"
+                "`/helpme` -- Show this message again."
+            )
+            try:
+                await interaction.user.send(msg)
+                await interaction.response.send_message("Check your DMs! :mailbox_with_mail:", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message(msg, ephemeral=True)
 
         # -- /laq-setup  (Manage Channels + Manage Messages) --------------
         @self.tree.command(
