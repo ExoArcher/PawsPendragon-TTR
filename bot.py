@@ -571,9 +571,6 @@ class TTRBot(discord.Client):
             return
         async with self._refresh_lock:
             api_data = await self._fetch_all()
-            # DEBUG: log raw sillymeter response so we can confirm field names
-            _sm = api_data.get("sillymeter")
-            log.info("[silly-debug] raw sillymeter data: %s", _sm)
             total_messages = 0
             guilds_updated: set[int] = set()
             for guild_id_str in list(self._guilds_block().keys()):

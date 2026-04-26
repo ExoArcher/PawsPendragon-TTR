@@ -1013,10 +1013,16 @@ def _team_info(api_name: str) -> tuple[str, str, str]:
 def format_sillymeter(data: dict[str, Any] | None) -> discord.Embed:
     """Embed for the #tt-information channel showing Silly Meter status.
 
-    Matches the style used in the official TTR Discord:
-      Charging  -- "The Silly Meter is filling up..." + points to go + teams
-                   Each team shown as: emoji **Wiki Name** / ***description***
-      Rewarding -- active team wiki name + its perk description
+    Actual API fields (confirmed from live response):
+      state             -- "Active" while meter is filling; changes when won
+      rewards           -- list[str]  team names (parallel with descriptions)
+      rewardDescriptions-- list[str]  short descriptions from TTR
+      rewardPoints      -- list       usually [None, None, None]
+      winner            -- str | None team name when a winner is active
+      winnerId          -- int        0 while no winner
+      hp                -- int        remaining points to fill the meter
+      asOf              -- int        unix timestamp of this snapshot
+      nextUpdateTimestamp -- int      when meter next ticks
     """
     embed = discord.Embed(title=":circus_tent: Silly Meter", color=TTR_COLOR)
 
@@ -1025,63 +1031,47 @@ def format_sillymeter(data: dict[str, Any] | None) -> discord.Embed:
         _footer(embed, None)
         return embed
 
-    state  = (data.get("state") or "").strip().lower()
-    winner = (data.get("winner") or "").strip()
-    teams  = data.get("teams") or []
-    if not isinstance(teams, list):
-        teams = []
+    state   = (data.get("state") or "").strip()
+    winner  = (data.get("winner") or "").strip()
+    rewards = data.get("rewards") or []
+    descs   = data.get("rewardDescriptions") or []
+    hp      = data.get("hp")
+    as_of   = data.get("asOf")
+
+    if not isinstance(rewards, list):
+        rewards = []
+    if not isinstance(descs, list):
+        descs = []
 
     # ---- REWARDING: a winning team is active ----------------------------
-    if state == "rewarding" and winner:
-        wiki_name, emoji, desc = _team_info(winner)
+    if winner:
+        wiki_name, emoji, wiki_desc = _team_info(winner)
         body = f":white_check_mark: {emoji} **{wiki_name}** is active!"
-        if desc:
-            body += f"\n\n***{desc}***"
+        if wiki_desc:
+            body += f"\n\n***{wiki_desc}***"
         body += "\n\n*The Silly Meter has been filled. Enjoy the rewards while they last!*"
         embed.description = body
 
-    # ---- CHARGING: meter is filling up ----------------------------------
+    # ---- ACTIVE: meter is filling up ------------------------------------
     else:
-        # Progress line mirrors TTR Discord: "X Global Silly Points to go! (Y%)"
-        needed = data.get("needed")
-        pct    = data.get("percentFilled") or data.get("progress")
-
-        progress_line = ""
-        if needed is not None:
+        desc_line = "**The Silly Meter is filling up...**"
+        if hp is not None:
             try:
-                needed_int = int(needed)
-                if pct is not None:
-                    try:
-                        pct_val = float(pct)
-                        if pct_val <= 1.0:
-                            pct_val *= 100
-                        progress_line = (
-                            f"{needed_int:,} Global Silly Points to go! "
-                            f"({pct_val:.0f}%)"
-                        )
-                    except (TypeError, ValueError):
-                        progress_line = f"{needed_int:,} Global Silly Points to go!"
-                else:
-                    progress_line = f"{needed_int:,} Global Silly Points to go!"
+                desc_line += f"\n{int(hp):,} Global Silly Points to go!"
             except (TypeError, ValueError):
                 pass
+        embed.description = desc_line
 
-        desc_parts = ["**The Silly Meter is filling up...**"]
-        if progress_line:
-            desc_parts.append(progress_line)
-        embed.description = "\n".join(desc_parts)
-
-        # Team list: emoji **Wiki Name** + bold-italic description
-        if teams:
+        if rewards:
             team_blocks: list[str] = []
-            for team in teams:
-                if not isinstance(team, dict):
-                    continue
-                api_name = (team.get("name") or "Unknown Team").strip()
-                wiki_name, emoji, team_desc = _team_info(api_name)
+            for i, api_name in enumerate(rewards):
+                api_name = api_name.strip()
+                wiki_name, emoji, wiki_desc = _team_info(api_name)
+                # Prefer wiki description; fall back to API's own description
+                display_desc = wiki_desc or (descs[i] if i < len(descs) else "")
                 block = f"{emoji} **{wiki_name}**"
-                if team_desc:
-                    block += f"\n***{team_desc}***"
+                if display_desc:
+                    block += f"\n***{display_desc}***"
                 team_blocks.append(block)
             if team_blocks:
                 embed.add_field(
@@ -1090,7 +1080,7 @@ def format_sillymeter(data: dict[str, Any] | None) -> discord.Embed:
                     inline=False,
                 )
 
-    _footer(embed, data.get("lastUpdated"))
+    _footer(embed, as_of)
     return embed
 
 # --------------------------------------------------------------- public mapping
