@@ -366,6 +366,11 @@ class TTRBot(discord.Client):
             except discord.Forbidden:
                 log.warning("No permission to fetch message in #%s", channel.name)
                 verified.append(mid)
+            except discord.HTTPException as e:
+                # Transient Discord error (e.g. 503) -- assume message still exists,
+                # keep the ID and retry next cycle rather than creating a duplicate.
+                log.warning("Transient HTTP %s verifying message %s in #%s -- keeping ID.", e.status, mid, channel.name)
+                verified.append(mid)
         while len(verified) < at_least:
             msg = await self._send_placeholder(key, channel)
             verified.append(msg.id)
@@ -784,6 +789,10 @@ class TTRBot(discord.Client):
                     pass
                 kept_ids.append(new_msg.id)
                 edited += 1
+            except discord.HTTPException as e:
+                # Transient Discord error (e.g. 503) -- keep the ID and retry next cycle.
+                log.warning("Transient HTTP %s editing message %s (%s/%s) -- will retry.", e.status, mid, guild_id, feed_key)
+                kept_ids.append(mid)
             await asyncio.sleep(3.0)
         for mid in ids[len(embeds):]:
             try:
@@ -794,6 +803,9 @@ class TTRBot(discord.Client):
                 edited += 1
             except discord.NotFound:
                 pass
+            except discord.HTTPException as e:
+                log.warning("Transient HTTP %s on stale-slot message %s -- keeping ID.", e.status, mid)
+                kept_ids.append(mid)
             await asyncio.sleep(3.0)
         self._set_state(guild_id, feed_key, channel.id, kept_ids)
         return edited
