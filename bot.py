@@ -94,6 +94,7 @@ from discord.ext import tasks
 from config import Config
 from formatters import FORMATTERS, format_doodles, format_information, format_sillymeter
 from ttr_api import TTRApiClient
+from Console import run_console
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,6 +131,8 @@ class TTRBot(discord.Client):
         self._api: TTRApiClient | None = None
         self._refresh_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
+        # Set by Console 'stop' so close() skips its own duplicate broadcast.
+        self._console_stop_sent: bool = False
 
     # ------------------------------------------------------------------ state
 
@@ -232,10 +235,13 @@ class TTRBot(discord.Client):
     async def close(self) -> None:
         """Broadcast maintenance notices then shut down cleanly."""
         log.info("Shutdown signal received -- sending maintenance notices...")
-        try:
-            await asyncio.wait_for(self._broadcast_maintenance(), timeout=15.0)
-        except Exception as exc:
-            log.warning("Maintenance broadcast failed: %s", exc)
+        if not self._console_stop_sent:
+            try:
+                await asyncio.wait_for(self._broadcast_maintenance(), timeout=15.0)
+            except Exception as exc:
+                log.warning("Maintenance broadcast failed: %s", exc)
+        else:
+            log.info("Console stop already sent maintenance notice -- skipping auto-broadcast.")
         if self._api is not None:
             await self._api.__aexit__(None, None, None)
         await super().close()
@@ -270,6 +276,8 @@ class TTRBot(discord.Client):
             await self._sync_commands_to_guild(guild)
 
         await self._cleanup_maintenance_msgs()
+        # Start the hosting-panel console listener (stop / restart / help).
+        asyncio.create_task(run_console(self), name="console-listener")
         await self._cleanup_announcements_on_startup()
         await self._save_state()
 
