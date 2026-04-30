@@ -386,30 +386,9 @@ def build_options(pts: int, activities: list[Activity],
     best   = by_avg[0]
     second = by_avg[1] if len(by_avg) > 1 else best
     worst  = by_avg[-1]
-    options: list[dict] = []
+    collected: list[dict] = []
 
-    # Option 1: Best only (fastest)
-    n = _ceil_runs(pts, best)
-    options.append({
-        "label": "Fastest",
-        "emoji": "🏆",
-        "plan":  [(best, n)],
-        "total": n,
-        "note":  f"Most {currency} per run — fewest runs to next boss fight.",
-    })
-
-    # Option 2: Most accessible
-    if worst != best:
-        n2 = _ceil_runs(pts, worst)
-        options.append({
-            "label": "Accessible",
-            "emoji": "⚡",
-            "plan":  [(worst, n2)],
-            "total": n2,
-            "note":  "Easiest facility to access, more runs required.",
-        })
-
-    # Option 3: Smart mix
+    # Build Smart Mix
     if second != best:
         bulk = pts // best.avg_pts
         rem  = pts - bulk * best.avg_pts
@@ -423,7 +402,7 @@ def build_options(pts: int, activities: list[Activity],
         else:
             mix_plan = [(second, fill)]
             mix_note = "Second-best facility handles the gap."
-        options.append({
+        collected.append({
             "label": "Smart Mix",
             "emoji": "🔄",
             "plan":  mix_plan,
@@ -431,7 +410,28 @@ def build_options(pts: int, activities: list[Activity],
             "note":  mix_note,
         })
 
-    return options
+    # Build Fastest (best single activity)
+    n = _ceil_runs(pts, best)
+    collected.append({
+        "label": "Fastest",
+        "emoji": "🏆",
+        "plan":  [(best, n)],
+        "total": n,
+        "note":  f"Most {currency} per run — fewest total runs.",
+    })
+
+    # Build Accessible (lowest yield, highest run count)
+    if worst != best:
+        n2 = _ceil_runs(pts, worst)
+        collected.append({
+            "label": "Accessible",
+            "emoji": "⚡",
+            "plan":  [(worst, n2)],
+            "total": n2,
+            "note":  "Easiest facility to access — more runs required.",
+        })
+
+    return collected
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -456,8 +456,7 @@ def build_result_embed(
         value=(
             f"{current_pts:,} / {quota:,} {meta['currency']}\n"
             f"**{pts_remaining:,} {meta['currency']} still needed**\n"
-            f"*Run facilities to earn {meta['currency']} — "
-            f"the {meta['boss']} is your reward.*"
+            f"*Run facilities to earn {meta['currency']}*"
         ),
         inline=False,
     )
