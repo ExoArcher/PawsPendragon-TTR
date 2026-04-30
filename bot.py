@@ -364,7 +364,9 @@ class TTRBot(discord.Client):
                     channel_name, category=category,
                     topic=f"Live TTR {key} feed — auto-updated by bot.",
                 )
-            await self._ensure_messages(guild.id, key, channel, at_least=1)
+            # information feed uses 3 pinned messages (districts, field offices, silly meter)
+            at_least = 3 if key == "information" else 1
+            await self._ensure_messages(guild.id, key, channel, at_least=at_least)
 
         # ── Static #suit-calculator channel ──────────────────────────────
         calc_name = self.config.channel_suit_calculator
@@ -1112,10 +1114,13 @@ class TTRBot(discord.Client):
             fieldoffices = None if isinstance(results[2], BaseException) else results[2]
             sillymeter   = None if isinstance(results[3], BaseException) else results[3]
 
-            info_embed  = format_information(invasions=invasions, population=population, fieldoffices=fieldoffices)
-            silly_embed = format_sillymeter(sillymeter)
+            from formatters import format_fieldoffices
+            info_embed   = format_information(invasions=invasions, population=population, fieldoffices=fieldoffices)
+            fo_embed     = format_fieldoffices(fieldoffices=fieldoffices)
+            silly_embed  = format_sillymeter(sillymeter)
             try:
                 await interaction.user.send(embed=info_embed)
+                await interaction.user.send(embed=fo_embed)
                 await interaction.user.send(embed=silly_embed)
                 await interaction.followup.send("Check your DMs! 📬", ephemeral=True)
             except discord.Forbidden:
