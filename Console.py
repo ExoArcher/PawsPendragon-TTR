@@ -418,12 +418,11 @@ async def _handle_rejoin(bot) -> None:
                     f"{_INVITE_LINK}\n\n"
                     f"**New permissions include:**\n"
                     f"• View Channels & Read Message History\n"
-                    f"• Send Messages & Send Messages in Threads\n"
                     f"• Embed Links & Attach Files\n"
                     f"• Manage Messages & Manage Channels\n"
                     f"• Create Public & Private Threads\n"
                     f"• Use External Emojis & Use Application Commands\n"
-                    f"• Add Reactions & Mention Everyone\n\n"
+                    f"• Add Reactions\n\n"
                     f"After re-inviting, run `/pd-setup` to get back to where you left off. 🐾"
                 )
                 dmed += 1
