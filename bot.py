@@ -441,7 +441,7 @@ class TTRBot(discord.Client):
         embed  = build_suit_calculator_embed()
         gs     = self._guild_state(guild_id)
         entry  = gs.get("suit_calculator", {})
-        msg_id = entry.get("message_id") if isinstance(entry, dict) else None
+        msg_id = (entry.get("message_ids") or [None])[0] if isinstance(entry, dict) else None
 
         if msg_id:
             try:
@@ -460,7 +460,7 @@ class TTRBot(discord.Client):
                 await msg.pin(reason="Suit calculator info — LanceAQuack TTR")
             except (discord.Forbidden, discord.HTTPException) as exc:
                 log.debug("[suit-calc] Could not pin message: %s", exc)
-            gs["suit_calculator"] = {"channel_id": channel.id, "message_id": msg.id}
+            gs["suit_calculator"] = {"channel_id": channel.id, "message_ids": [msg.id]}
             log.info("[suit-calc] Posted pin %s in guild %s (#%s)", msg.id, guild_id, channel.name)
         except Exception as exc:
             log.warning("[suit-calc] Failed to post pin in guild %s: %s", guild_id, exc)
@@ -1301,8 +1301,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
-_subprocess.run(
-    ["git", "branch", "--set-upstream-to=origin/main", "master"],
-    cwd=_BOT_DIR, capture_output=True,
-)

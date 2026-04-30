@@ -5,18 +5,10 @@ calculate.py — Cog suit disguise point calculator for LanceAQuack TTR.
 Exports
 -------
 register_calculate(bot)          Register the /calculate slash command.
-build_suit_calculator_embed()    Build the pinned info embed for #suit-calculator.
+build_suit_calculator_embed()    Pinned info embed for #suit-calculator.
 
-Supports all four factions (Sellbot · Cashbot · Lawbot · Bossbot)
-for both standard and 2.0 suits.
-
-Returns points remaining + THREE optimised activity plans that each
-minimise total runs via a different strategy:
-  Option 1 — 🏆 Speed Run    : includes the faction boss (fewest possible runs)
-  Option 2 — ⚡ No Boss      : best non-boss activity only
-  Option 3 — 🔄 Smart Mix    : 1 boss run + non-boss fill  ·OR·  top two non-boss tiers
-
-Point values are approximate averages based on community data.
+All point quotas are sourced directly from the official TTR suit charts.
+The boss fight is the REWARD — activities earn points TOWARD it.
 """
 from __future__ import annotations
 
@@ -28,7 +20,7 @@ from discord import app_commands
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Activity tables
+# Activity tables  (points earned per run toward the boss fight)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass(frozen=True)
@@ -36,44 +28,33 @@ class Activity:
     name: str
     min_pts: int
     max_pts: int
-    avg_pts: int
-    is_boss: bool = False
+
+    @property
+    def avg_pts(self) -> int:
+        return (self.min_pts + self.max_pts) // 2
 
     @property
     def range_str(self) -> str:
-        return f"~{self.min_pts:,}–{self.max_pts:,}"
+        return f"{self.min_pts:,}–{self.max_pts:,}"
 
 
-SELLBOT_ACTIVITIES: list[Activity] = [
-    Activity("VP (Sellbot Boss)",         1_800, 2_500, 2_200, is_boss=True),
-    Activity("Factory — Full Run",          300,   425,   375),
-    Activity("Factory — Short",             150,   250,   200),
-    Activity("Individual Sellbot Cogs",       2,    10,     5),
+SELLBOT_ACTIVITIES = [
+    Activity("Steel Factory — Long",   1_525, 1_630),
+    Activity("Steel Factory — Short",    867,   950),
+    Activity("Scrap Factory — Long",     596,   638),
+    Activity("Scrap Factory — Short",    350,   356),
 ]
-
-CASHBOT_ACTIVITIES: list[Activity] = [
-    Activity("CFO (Cashbot Boss)",        2_000, 3_000, 2_500, is_boss=True),
-    Activity("Bullion Mint",                500,   700,   600),
-    Activity("Dollar Mint",                 200,   300,   250),
-    Activity("Short-Change Mint",            50,   100,    75),
-    Activity("Individual Cashbot Cogs",       2,    10,     5),
+CASHBOT_ACTIVITIES = [
+    Activity("Bullion Mint",  1_626, 1_850),
+    Activity("Coin Mint",       702,   807),
 ]
-
-LAWBOT_ACTIVITIES: list[Activity] = [
-    Activity("CJ (Lawbot Boss)",          2_500, 3_500, 3_000, is_boss=True),
-    Activity("DA Office — D",               850,   950,   900),
-    Activity("DA Office — C",               600,   700,   650),
-    Activity("DA Office — B",               350,   450,   400),
-    Activity("DA Office — A",               175,   225,   200),
-    Activity("Individual Lawbot Cogs",         2,    10,     5),
+LAWBOT_ACTIVITIES = [
+    Activity("Bullion Mint",  1_626, 1_850),
+    Activity("Coin Mint",       702,   807),
 ]
-
-BOSSBOT_ACTIVITIES: list[Activity] = [
-    Activity("CEO (Bossbot Boss)",        3_000, 4_000, 3_500, is_boss=True),
-    Activity("Back 9 — Golf Course",      1_400, 1_600, 1_500),
-    Activity("Middle 6 — Golf",             700,   900,   800),
-    Activity("Front 3 — Golf",              350,   450,   400),
-    Activity("Individual Bossbot Cogs",        2,    10,     5),
+BOSSBOT_ACTIVITIES = [
+    Activity("The Final Fringe",  2_097, 2_305),
+    Activity("The First Fairway",   882,   975),
 ]
 
 FACTION_ACTIVITIES: dict[str, list[Activity]] = {
@@ -83,156 +64,241 @@ FACTION_ACTIVITIES: dict[str, list[Activity]] = {
     "bossbot":  BOSSBOT_ACTIVITIES,
 }
 
+FACTION_META: dict[str, dict] = {
+    "sellbot": {"label": "Sellbot",  "currency": "Merits",        "color": 0xA26DB3,
+                "boss": "VP (Sellbot Playground)"},
+    "cashbot":  {"label": "Cashbot",  "currency": "Cogbucks",      "color": 0x27AE60,
+                 "boss": "CFO (Cashbot Playground)"},
+    "lawbot":   {"label": "Lawbot",   "currency": "Jury Notices",  "color": 0x3498DB,
+                 "boss": "CJ (Lawbot Playground)"},
+    "bossbot":  {"label": "Bossbot",  "currency": "Stock Options", "color": 0xE67E22,
+                 "boss": "CEO (Bossbot Playground)"},
+}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Suit registry
 # ══════════════════════════════════════════════════════════════════════════════
+# user_abbr -> (faction, chart_key, display_name)
+# chart_key matches the HTML source data prefix (some are single letters).
 
-_SELLBOT_SUITS: dict[str, tuple[str, str, str]] = {
-    "coldcaller":      ("Cold Caller",      "CC",   "sellbot"),
-    "telemarketer":    ("Telemarketer",     "TM",   "sellbot"),
-    "namedropper":     ("Name Dropper",     "ND",   "sellbot"),
-    "gladhander":      ("Glad Hander",      "GH",   "sellbot"),
-    "movershaker":     ("Mover & Shaker",   "MS",   "sellbot"),
-    "twoface":         ("Two-Face",         "TF",   "sellbot"),
-    "themingler":      ("The Mingler",      "TNG",  "sellbot"),
-    "mrhollywood":     ("Mr. Hollywood",    "MH",   "sellbot"),
+SUITS: dict[str, tuple[str, str, str]] = {
+    # Sellbot
+    "CC":  ("sellbot", "CC",  "Cold Caller"),
+    "TM":  ("sellbot", "T",   "Telemarketer"),    # chart: "T"
+    "ND":  ("sellbot", "ND",  "Name Dropper"),
+    "GH":  ("sellbot", "GH",  "Glad Hander"),
+    "MS":  ("sellbot", "MS",  "Mover & Shaker"),
+    "TF":  ("sellbot", "TF",  "Two-Face"),
+    "TNG": ("sellbot", "TM",  "The Mingler"),     # chart: "TM"
+    "MH":  ("sellbot", "MH",  "Mr. Hollywood"),
+    # Cashbot
+    "SC":  ("cashbot", "SC",  "Short Change"),
+    "PNP": ("cashbot", "PP",  "Penny Pincher"),   # chart: "PP"
+    "TW":  ("cashbot", "T",   "Tightwad"),        # chart: "T"
+    "BC":  ("cashbot", "BC",  "Bean Counter"),
+    "NC":  ("cashbot", "NC",  "Number Cruncher"),
+    "MB":  ("cashbot", "MB",  "Money Bags"),
+    "LS":  ("cashbot", "LS",  "Loan Shark"),
+    "RB":  ("cashbot", "RB",  "Robber Baron"),
+    # Lawbot
+    "BF":  ("lawbot",  "BF",  "Bottom Feeder"),
+    "BLD": ("lawbot",  "B",   "Bloodsucker"),     # chart: "B"
+    "DT":  ("lawbot",  "DT",  "Double Talker"),
+    "AC":  ("lawbot",  "AC",  "Ambulance Chaser"),
+    "BAC": ("lawbot",  "BS",  "Back Stabber"),    # chart: "BS"
+    "SD":  ("lawbot",  "SD",  "Spin Doctor"),
+    "LE":  ("lawbot",  "LE",  "Legal Eagle"),
+    "BW":  ("lawbot",  "BW",  "Big Wig"),
+    # Bossbot
+    "FL":  ("bossbot", "F",   "Flunky"),          # chart: "F"
+    "PP":  ("bossbot", "PP",  "Pencil Pusher"),
+    "YM":  ("bossbot", "Y",   "Yesman"),          # chart: "Y"
+    "MM":  ("bossbot", "M",   "Micromanager"),    # chart: "M"
+    "DS":  ("bossbot", "D",   "Downsizer"),       # chart: "D"
+    "HH":  ("bossbot", "HH",  "Head Hunter"),
+    "CR":  ("bossbot", "CR",  "Corporate Raider"),
+    "TBC": ("bossbot", "TBC", "The Big Cheese"),
 }
 
-_CASHBOT_SUITS: dict[str, tuple[str, str, str]] = {
-    "shortchange":     ("Short Change",     "SC",   "cashbot"),
-    "pennypincher":    ("Penny Pincher",    "PNP",  "cashbot"),
-    "tightwad":        ("Tightwad",         "TW",   "cashbot"),
-    "beancounter":     ("Bean Counter",     "BC",   "cashbot"),
-    "numbercruncher":  ("Number Cruncher",  "NC",   "cashbot"),
-    "moneybags":       ("Money Bags",       "MB",   "cashbot"),
-    "loanshark":       ("Loan Shark",       "LS",   "cashbot"),
-    "robberbaron":     ("Robber Baron",     "RB",   "cashbot"),
-}
-
-_LAWBOT_SUITS: dict[str, tuple[str, str, str]] = {
-    "bottomfeeder":    ("Bottom Feeder",    "BF",   "lawbot"),
-    "bloodsucker":     ("Bloodsucker",      "BS",   "lawbot"),
-    "doubletalker":    ("Double Talker",    "DT",   "lawbot"),
-    "ambulancechaser": ("Ambulance Chaser", "AC",   "lawbot"),
-    "backstabber":     ("Back Stabber",     "BAC",  "lawbot"),
-    "spindoctor":      ("Spin Doctor",      "SD",   "lawbot"),
-    "legaleagle":      ("Legal Eagle",      "LE",   "lawbot"),
-    "bigwig":          ("Big Wig",          "BW",   "lawbot"),
-}
-
-_BOSSBOT_SUITS: dict[str, tuple[str, str, str]] = {
-    "flunky":          ("Flunky",           "FL",   "bossbot"),
-    "pencilpusher":    ("Pencil Pusher",    "PP",   "bossbot"),
-    "yesman":          ("Yesman",           "YM",   "bossbot"),
-    "micromanager":    ("Micromanager",     "MM",   "bossbot"),
-    "downsizer":       ("Downsizer",        "DS",   "bossbot"),
-    "headhunter":      ("Head Hunter",      "HH",   "bossbot"),
-    "corporateraider": ("Corporate Raider", "CR",   "bossbot"),
-    "thebigcheese":    ("The Big Cheese",   "TBC",  "bossbot"),
-}
-
-ALL_SUITS: dict[str, tuple[str, str, str]] = {
-    **_SELLBOT_SUITS,
-    **_CASHBOT_SUITS,
-    **_LAWBOT_SUITS,
-    **_BOSSBOT_SUITS,
-}
-
-_ABBR_TO_KEY: dict[str, str] = {
-    info[1].lower(): key for key, info in ALL_SUITS.items()
-}
-
-FACTION_META: dict[str, dict] = {
-    "sellbot": {"label": "Sellbot",  "currency": "Merits",        "color": 0xE74C3C},
-    "cashbot":  {"label": "Cashbot",  "currency": "Cogbucks",      "color": 0x2ECC71},
-    "lawbot":   {"label": "Lawbot",   "currency": "Jury Notices",  "color": 0x3498DB},
-    "bossbot":  {"label": "Bossbot",  "currency": "Stock Options", "color": 0xF39C12},
+_NAME_TO_ABBR: dict[str, str] = {
+    "coldcaller":"CC",   "telemarketer":"TM", "namedropper":"ND",
+    "gladhander":"GH",   "movershaker":"MS",  "mover&shaker":"MS",
+    "twoface":"TF",      "two-face":"TF",     "themingler":"TNG",
+    "mingler":"TNG",     "mrhollywood":"MH",
+    "shortchange":"SC",  "pennypincher":"PNP","tightwad":"TW",
+    "beancounter":"BC",  "numbercruncher":"NC","moneybags":"MB",
+    "loanshark":"LS",    "robberbaron":"RB",
+    "bottomfeeder":"BF", "bloodsucker":"BLD", "doubletalker":"DT",
+    "ambulancechaser":"AC","backstabber":"BAC","spindoctor":"SD",
+    "legaleagle":"LE",   "bigwig":"BW",
+    "flunky":"FL",       "pencilpusher":"PP", "yesman":"YM",
+    "micromanager":"MM", "downsizer":"DS",    "headhunter":"HH",
+    "corporateraider":"CR","thebigcheese":"TBC","bigcheese":"TBC",
 }
 
 SUITS_BY_FACTION: dict[str, list[tuple[str, str]]] = {
-    "Sellbot": [(v[0], v[1]) for v in _SELLBOT_SUITS.values()],
-    "Cashbot":  [(v[0], v[1]) for v in _CASHBOT_SUITS.values()],
-    "Lawbot":   [(v[0], v[1]) for v in _LAWBOT_SUITS.values()],
-    "Bossbot":  [(v[0], v[1]) for v in _BOSSBOT_SUITS.values()],
+    "Sellbot": [("CC","Cold Caller"),("TM","Telemarketer"),("ND","Name Dropper"),
+                ("GH","Glad Hander"),("MS","Mover & Shaker"),("TF","Two-Face"),
+                ("TNG","The Mingler"),("MH","Mr. Hollywood")],
+    "Cashbot":  [("SC","Short Change"),("PNP","Penny Pincher"),("TW","Tightwad"),
+                 ("BC","Bean Counter"),("NC","Number Cruncher"),("MB","Money Bags"),
+                 ("LS","Loan Shark"),("RB","Robber Baron")],
+    "Lawbot":   [("BF","Bottom Feeder"),("BLD","Bloodsucker"),("DT","Double Talker"),
+                 ("AC","Ambulance Chaser"),("BAC","Back Stabber"),("SD","Spin Doctor"),
+                 ("LE","Legal Eagle"),("BW","Big Wig")],
+    "Bossbot":  [("FL","Flunky"),("PP","Pencil Pusher"),("YM","Yesman"),
+                 ("MM","Micromanager"),("DS","Downsizer"),("HH","Head Hunter"),
+                 ("CR","Corporate Raider"),("TBC","The Big Cheese")],
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Promotion point quotas
+# Point quota tables  (sourced from official TTR suit charts)
+# quota[faction][chart_key][level] = points needed for promotion
+# level 50 = 0 = Maxed
 # ══════════════════════════════════════════════════════════════════════════════
-# Points required at each level to earn the NEXT promotion.
-# Approximate values based on community data; exact figures vary per suit tier.
-# 2.0 suits require ~5x the standard quota at each level.
 
-LEVEL_QUOTAS: dict[int, int] = {
-    1:    50,
-    2:   100,
-    3:   200,
-    4:   400,
-    5:   800,
-    6:  1_600,
-    7:  3_000,
-    8:  5_000,
-    9:  8_000,
-    10: 12_000,
-    11: 18_000,
-    12: 25_000,
+QUOTAS: dict[str, dict[str, dict[int, int]]] = {
+
+    "sellbot": {
+        "CC": {1:20,  2:30,  3:40,  4:50,  5:200},
+        "T":  {2:40,  3:50,  4:60,  5:70,  6:300},
+        "ND": {3:60,  4:80,  5:100, 6:120, 7:500},
+        "GH": {4:100, 5:130, 6:160, 7:190, 8:800},
+        "MS": {5:160, 6:210, 7:260, 8:310, 9:1_300},
+        "TF": {6:260, 7:340, 8:420, 9:500, 10:2_100},
+        "TM": {7:420, 8:550, 9:680, 10:810, 11:3_400},
+        "MH": {
+            8:680,   9:890,   10:1_100, 11:1_310, 12:5_500,
+            13:680, 14:5_500,
+            15:680,  16:890,  17:1_100, 18:1_310, 19:5_500,
+            20:680,  21:890,  22:1_100, 23:1_310, 24:1_520,
+            25:1_730, 26:1_940, 27:2_150, 28:2_360, 29:5_500,
+            30:680,  31:890,  32:1_100, 33:1_310, 34:1_520,
+            35:1_730, 36:1_940, 37:2_150, 38:2_360, 39:5_500,
+            40:680,  41:890,  42:1_100, 43:1_310, 44:1_520,
+            45:1_730, 46:1_940, 47:2_150, 48:2_360, 49:5_500,
+            50:0,
+        },
+    },
+
+    "cashbot": {
+        "SC": {1:40,  2:50,  3:60,  4:70,  5:300},
+        "PP": {2:60,  3:80,  4:100, 5:120, 6:500},
+        "T":  {3:100, 4:130, 5:160, 6:190, 7:800},
+        "BC": {4:160, 5:210, 6:260, 7:310, 8:1_300},
+        "NC": {5:260, 6:340, 7:420, 8:500, 9:2_100},
+        "MB": {6:420, 7:550, 8:680, 9:810, 10:3_400},
+        "LS": {7:680, 8:890, 9:1_100, 10:1_310, 11:5_500},
+        "RB": {
+            8:1_100,  9:1_440,  10:1_780, 11:2_120, 12:8_900,
+            13:1_100, 14:8_900,
+            15:1_100, 16:1_440, 17:1_780, 18:2_120, 19:8_900,
+            20:1_100, 21:1_440, 22:1_780, 23:2_120, 24:2_460,
+            25:2_800, 26:3_140, 27:3_480, 28:3_820, 29:8_900,
+            30:1_100, 31:1_440, 32:1_780, 33:2_120, 34:2_460,
+            35:2_800, 36:3_140, 37:3_480, 38:3_820, 39:8_900,
+            40:1_100, 41:1_440, 42:1_780, 43:2_120, 44:2_460,
+            45:2_800, 46:3_140, 47:3_480, 48:3_820, 49:8_900,
+            50:0,
+        },
+    },
+
+    "lawbot": {
+        "BF": {1:60,  2:80,  3:100, 4:120, 5:500},
+        "B":  {2:100, 3:130, 4:160, 5:190, 6:800},
+        "DT": {3:160, 4:240, 5:260, 6:310, 7:1_300},
+        "AC": {4:260, 5:340, 6:420, 7:500, 8:2_100},
+        "BS": {5:420, 6:550, 7:680, 8:810, 9:3_400},
+        "SD": {6:680, 7:890, 8:1_100, 9:1_310, 10:5_500},
+        "LE": {7:1_110, 8:1_440, 9:1_780, 10:2_120, 11:8_900},
+        "BW": {
+            8:1_780,  9:2_330,  10:2_880, 11:3_430, 12:14_400,
+            13:1_780, 14:14_400,
+            15:1_780, 16:2_330, 17:2_880, 18:3_430, 19:14_400,
+            20:1_780, 21:2_330, 22:2_880, 23:3_430, 24:3_980,
+            25:4_530, 26:5_080, 27:5_630, 28:6_180, 29:14_400,
+            30:1_780, 31:2_330, 32:2_880, 33:3_430, 34:3_980,
+            35:4_530, 36:5_080, 37:5_630, 38:6_180, 39:14_400,
+            40:1_780, 41:2_330, 42:2_880, 43:3_430, 44:3_980,
+            45:4_530, 46:5_080, 47:5_630, 48:6_180, 49:14_400,
+            50:0,
+        },
+    },
+
+    "bossbot": {
+        "F":   {1:100, 2:130, 3:160, 4:190, 5:800},
+        "PP":  {2:160, 3:210, 4:260, 5:310, 6:1_300},
+        "Y":   {3:260, 4:340, 5:420, 6:500, 7:2_100},
+        "M":   {4:420, 5:550, 6:680, 7:810, 8:3_400},
+        "D":   {5:680, 6:890, 7:1_100, 8:1_310, 9:5_500},
+        "HH":  {6:1_100, 7:1_400, 8:1_780, 9:2_120, 10:8_900},
+        "CR":  {7:1_780, 8:2_330, 9:2_880, 10:3_430, 11:14_400},
+        "TBC": {
+            8:2_880,   9:3_770,   10:4_660,  11:5_500,  12:23_330,
+            13:2_880, 14:23_300,
+            15:2_800,  16:3_770,  17:4_660,  18:5_500,  19:23_330,
+            20:2_880,  21:3_770,  22:4_660,  23:5_500,  24:6_440,
+            25:7_330,  26:8_220,  27:9_110,  28:10_000, 29:23_330,
+            30:2_880,  31:3_770,  32:4_660,  33:5_500,  34:6_440,
+            35:7_330,  36:8_220,  37:9_110,  38:10_000, 39:23_330,
+            40:2_880,  41:3_770,  42:4_660,  43:5_500,  44:6_440,
+            45:7_330,  46:8_220,  47:9_110,  48:10_000, 49:23_330,
+            50:0,
+        },
+    },
 }
-
-LEVEL_QUOTAS_V2: dict[int, int] = {k: v * 5 for k, v in LEVEL_QUOTAS.items()}
-MAX_LEVEL = 12
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Input parsing
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _normalise(raw: str) -> str:
-    return "".join(c for c in raw.lower() if c.isalnum())
+def _norm(s: str) -> str:
+    return "".join(c for c in s.lower() if c.isalnum())
 
 
-def resolve_suit(raw: str) -> tuple[str, str, str, bool] | None:
+def resolve_suit(raw: str) -> tuple[str, str, str, str, bool] | None:
     """
-    Parse a user-supplied suit string.
-
-    Accepts full names, abbreviations, and optional 2.0 suffix.
-    Returns (canonical_key, display_name, faction, is_v2) or None.
+    Parse user suit input, stripping any 2.0 suffix.
+    Returns (user_abbr, display_name, faction, chart_key, is_v2) or None.
     """
     is_v2 = False
-    cleaned = raw.strip()
+    s = raw.strip()
 
     for suffix in ("2.0", "20", "v2"):
-        if cleaned.lower().endswith(suffix):
-            candidate = cleaned[: -len(suffix)].strip().rstrip(".")
+        if s.lower().endswith(suffix):
+            candidate = s[: -len(suffix)].strip().rstrip(".")
             if candidate:
-                cleaned = candidate
+                s = candidate
                 is_v2 = True
                 break
 
-    norm = _normalise(cleaned)
+    norm = _norm(s)
+    upper = s.upper()
 
-    if norm in ALL_SUITS:
-        name, _, faction = ALL_SUITS[norm]
-        return norm, name, faction, is_v2
+    if upper in SUITS:
+        faction, chart_key, name = SUITS[upper]
+        return upper, name, faction, chart_key, is_v2
 
-    if norm in _ABBR_TO_KEY:
-        key = _ABBR_TO_KEY[norm]
-        name, _, faction = ALL_SUITS[key]
-        return key, name, faction, is_v2
+    if norm in _NAME_TO_ABBR:
+        abbr = _NAME_TO_ABBR[norm]
+        faction, chart_key, name = SUITS[abbr]
+        return abbr, name, faction, chart_key, is_v2
 
-    for key, (name, _, faction) in ALL_SUITS.items():
-        if key.startswith(norm) or _normalise(name).startswith(norm):
-            return key, name, faction, is_v2
+    for abbr, (faction, chart_key, name) in SUITS.items():
+        if abbr.lower().startswith(norm) or _norm(name).startswith(norm):
+            return abbr, name, faction, chart_key, is_v2
 
     return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Three-option activity planner
+# Activity planner — three options
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _runs(pts: int, act: Activity) -> int:
+def _ceil_runs(pts: int, act: Activity) -> int:
     return max(1, math.ceil(pts / act.avg_pts)) if pts > 0 else 0
 
 
@@ -243,104 +309,80 @@ def _plan_lines(plan: list[tuple[Activity, int]]) -> str:
     )
 
 
-def build_options(points_remaining: int, activities: list[Activity]) -> list[dict]:
+def build_options(points_remaining: int, activities: list[Activity],
+                  currency: str) -> list[dict]:
     """
-    Return up to three dicts, each describing a minimum-run activity plan.
+    Three plans for *points_remaining*:
+      Option 1 — Best single activity (fastest)
+      Option 2 — Lowest activity (most accessible)
+      Option 3 — Smart mix: bulk on best, fill with second-best
+    """
+    by_avg = sorted(activities, key=lambda a: a.avg_pts, reverse=True)
+    best   = by_avg[0]
+    second = by_avg[1] if len(by_avg) > 1 else best
+    worst  = by_avg[-1]
 
-    Keys: label, emoji, plan [(Activity, runs)], total_runs, note.
-    """
-    boss_acts     = [a for a in activities if a.is_boss]
-    non_boss_sort = sorted(
-        [a for a in activities if not a.is_boss],
-        key=lambda a: a.avg_pts, reverse=True,
-    )
     options: list[dict] = []
 
-    # ── Option 1 : Speed Run (best boss) ──────────────────────────────────
-    if boss_acts:
-        best_boss = max(boss_acts, key=lambda a: a.avg_pts)
-        n = _runs(points_remaining, best_boss)
-        options.append({
-            "label": "Speed Run",
-            "emoji": "🏆",
-            "plan":  [(best_boss, n)],
-            "total_runs": n,
-            "note":  "Fewest runs possible. Requires access to the faction boss.",
-        })
+    # Option 1: Best only
+    n = _ceil_runs(points_remaining, best)
+    options.append({
+        "label": "Fastest",
+        "emoji": "🏆",
+        "plan":  [(best, n)],
+        "total": n,
+        "note":  f"Most {currency} per run — fewest total runs.",
+    })
 
-    # ── Option 2 : No Boss (best single non-boss) ─────────────────────────
-    if non_boss_sort:
-        best_nb = non_boss_sort[0]
-        n = _runs(points_remaining, best_nb)
+    # Option 2: Most accessible (lowest yield)
+    if worst != best:
+        n2 = _ceil_runs(points_remaining, worst)
         options.append({
-            "label": "No Boss Required",
+            "label": "Accessible",
             "emoji": "⚡",
-            "plan":  [(best_nb, n)],
-            "total_runs": n,
-            "note":  "Best option if you aren't running the boss right now.",
+            "plan":  [(worst, n2)],
+            "total": n2,
+            "note":  "Easiest facility to access — more runs required.",
         })
 
-    # ── Option 3 : Smart Mix ──────────────────────────────────────────────
-    if boss_acts and non_boss_sort:
-        best_boss = max(boss_acts, key=lambda a: a.avg_pts)
-        best_nb   = non_boss_sort[0]
-        rem       = points_remaining - best_boss.avg_pts
+    # Option 3: Smart mix (best for bulk, second for fill)
+    if second != best:
+        bulk = points_remaining // best.avg_pts
+        rem  = points_remaining - bulk * best.avg_pts
+        fill = _ceil_runs(rem, second) if rem > 0 else 0
 
-        if rem <= 0:
-            plan = [(best_boss, 1)]
-            note = "A single boss run covers everything. No secondary grind needed."
+        if bulk > 0 and fill > 0:
+            mix_plan = [(best, bulk), (second, fill)]
+            mix_note = "Best facility for the bulk, second-best to top off the remainder."
+        elif bulk > 0:
+            mix_plan = [(best, bulk)]
+            mix_note = "Best facility covers it exactly with no fill needed."
         else:
-            fill = _runs(rem, best_nb)
-            plan = [(best_boss, 1), (best_nb, fill)]
-            note = (
-                "One boss run cuts the grind significantly; "
-                "a short secondary session finishes it off."
-            )
+            mix_plan = [(second, fill)]
+            mix_note = "Second-best facility handles the small gap."
 
         options.append({
             "label": "Smart Mix",
             "emoji": "🔄",
-            "plan":  plan,
-            "total_runs": sum(r for _, r in plan),
-            "note":  note,
-        })
-
-    elif len(non_boss_sort) >= 2:
-        primary   = non_boss_sort[0]
-        secondary = non_boss_sort[1]
-        bulk      = points_remaining // primary.avg_pts
-        rem       = points_remaining - bulk * primary.avg_pts
-        fill      = _runs(rem, secondary) if rem > 0 else 0
-        plan      = ([(primary, bulk)] if bulk else []) + ([(secondary, fill)] if fill else [])
-        if not plan:
-            plan = [(primary, 1)]
-
-        options.append({
-            "label": "Smart Mix",
-            "emoji": "🔄",
-            "plan":  plan,
-            "total_runs": sum(r for _, r in plan),
-            "note":  "Combines two activity tiers to minimise wasted points from over-shooting.",
+            "plan":  mix_plan,
+            "total": sum(r for _, r in mix_plan),
+            "note":  mix_note,
         })
 
     return options
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Result embed builder
+# Result embed
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_result_embed(
-    suit_name: str,
-    faction: str,
-    level: int,
-    current_pts: int,
-    quota: int,
-    is_v2: bool,
+    suit_name: str, faction: str, level: int,
+    current_pts: int, quota: int, is_v2: bool,
     options: list[dict],
 ) -> discord.Embed:
-    pts_remaining = quota - current_pts
     meta          = FACTION_META[faction]
+    pts_remaining = quota - current_pts
     v2_tag        = " (2.0)" if is_v2 else ""
 
     embed = discord.Embed(
@@ -351,80 +393,70 @@ def build_result_embed(
         name="📊  Progress",
         value=(
             f"{current_pts:,} / {quota:,} {meta['currency']}\n"
-            f"**{pts_remaining:,} {meta['currency']} still needed**"
+            f"**{pts_remaining:,} {meta['currency']} still needed**\n"
+            f"*Complete facilities to earn {meta['currency']} — "
+            f"the {meta['boss']} is your reward.*"
         ),
         inline=False,
     )
 
     for i, opt in enumerate(options, start=1):
-        total = opt["total_runs"]
         embed.add_field(
             name=(
                 f"{opt['emoji']}  Option {i} — {opt['label']}"
-                f"  ({total} run{'s' if total != 1 else ''})"
+                f"  ({opt['total']} run{'s' if opt['total'] != 1 else ''})"
             ),
             value=f"{_plan_lines(opt['plan'])}\n*{opt['note']}*",
             inline=False,
         )
 
     embed.set_footer(
-        text="Point values are averages — actual yields vary per run.  "
+        text="Point values are per-run averages from in-game data.  "
              "LanceAQuack TTR • #suit-calculator"
     )
     return embed
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# #suit-calculator channel info embed
+# #suit-calculator pinned channel embed
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_suit_calculator_embed() -> discord.Embed:
-    """
-    Pinned info embed for the #suit-calculator channel.
-    Covers: channel purpose, command format, all suits + abbreviations,
-    2.0 suit explanation, and approximate points per activity per faction.
-    """
     embed = discord.Embed(
         title="🧮  Suit Disguise Calculator",
         description=(
-            "This channel is your home base for tracking your **cog suit disguise progress**.\n\n"
-            "Use `/calculate` to get your remaining points and **three tailored activity plans** — "
-            "each showing the fewest total runs for a different play style:\n"
-            "🏆 **Speed Run** — boss-first for maximum efficiency\n"
-            "⚡ **No Boss Required** — best non-boss activity only\n"
-            "🔄 **Smart Mix** — one boss run + secondary fill, or a two-tier grind\n\n"
-            "Results are sent as a private reply, so feel free to use the command any time."
+            "Use `/calculate` to find out exactly how many more points your cog suit "
+            "needs and get **three activity plans** that minimise total runs.\n\n"
+            "**The boss fight is your reward** — the activities listed below earn "
+            "Merits / Cogbucks / Jury Notices / Stock Options that count toward your "
+            "next promotion quota. Reach the quota, earn a boss fight.\n\n"
+            "Results are sent as a private reply so feel free to use it any time."
         ),
         color=0x9B59B6,
     )
 
-    # ── How to use ──
+    # ── Command format ──
     embed.add_field(
         name="📋  Command Format",
         value=(
             "```\n/calculate <suit> <level> <current_points>\n```\n"
-            "**`suit`**  Name or abbreviation of your cog suit (see list below).\n"
-            "**`level`**  Your current suit level — a number from 1 to 12.\n"
-            "**`current_points`**  Points already earned toward your next promotion.\n\n"
-            "**Quick examples:**\n"
-            "> `/calculate TBC 10 4200`\n"
-            "> `/calculate Robber Baron 7 0`\n"
-            "> `/calculate LE 12 9000`"
+            "**`suit`** — Suit abbreviation or full name (see list below).\n"
+            "**`level`** — The number shown next to your suit in-game "
+            "(e.g. `12` for MH12, `1` for CC1).\n"
+            "**`current_points`** — Points already earned toward this level's quota "
+            "(enter `0` if you just ranked up).\n\n"
+            "**Examples:**\n"
+            "> `/calculate MH 12 3000`\n"
+            "> `/calculate TBC 29 0`\n"
+            "> `/calculate RB2.0 19 7000`  ← *2.0 suit (see below)*"
         ),
         inline=False,
     )
 
-    # ── Suit list (one field per faction) ──
-    faction_emojis = {
-        "Sellbot": "🔴",
-        "Cashbot":  "🟢",
-        "Lawbot":   "🔵",
-        "Bossbot":  "🟠",
-    }
+    # ── Suit lists ──
+    faction_emojis = {"Sellbot": "🔴", "Cashbot": "🟢", "Lawbot": "🔵", "Bossbot": "🟠"}
     for faction_label, suits in SUITS_BY_FACTION.items():
-        lines = "\n".join(
-            f"**{abbr}** — {name}" for name, abbr in suits
-        )
+        lines = "\n".join(f"**{abbr}** — {name}" for abbr, name in suits)
         embed.add_field(
             name=f"{faction_emojis[faction_label]}  {faction_label} Suits",
             value=lines,
@@ -435,34 +467,27 @@ def build_suit_calculator_embed() -> discord.Embed:
     embed.add_field(
         name="⚙️  Version 2.0 Suits",
         value=(
-            "A **2.0 suit** is the upgraded form of a fully maxed cog disguise. "
-            "Once you complete every promotion on the top-tier suit of a faction "
-            "(The Big Cheese, Robber Baron, Big Wig, or The Big Cheese respectively), "
-            "your disguise can continue ranking up into its **Version 2.0** — requiring "
-            "roughly **5× more points** per level than the standard suit.\n\n"
-            "**To calculate a 2.0 suit**, add `2.0` after the abbreviation:\n"
-            "> `/calculate TBC2.0 8 12000`\n"
-            "> `/calculate RB2.0 5 1500`\n"
-            "> `/calculate BW2.0 11 40000`"
+            "After fully maxing the top-tier suit of a faction at level 50, you unlock "
+            "its **2.0 version** — the same level range (8–50) starting fresh from level 8, "
+            "with identical point quotas.\n\n"
+            "Add `2.0` after the abbreviation to indicate a 2.0 suit:\n"
+            "> `MH2.0` · `RB2.0` · `BW2.0` · `TBC2.0`\n\n"
+            "*Example:* `/calculate TBC2.0 12 14000`"
         ),
         inline=False,
     )
 
-    # ── Points per activity (two columns) ──
+    # ── Points per activity ──
     embed.add_field(
         name="\u200b",
-        value="**── Approximate Points per Activity ──**",
+        value="**── Approximate Points Earned Per Activity Run ──**",
         inline=False,
     )
-
-    faction_order = ["sellbot", "cashbot", "lawbot", "bossbot"]
-    for faction in faction_order:
-        acts = FACTION_ACTIVITIES[faction]
-        meta = FACTION_META[faction]
+    for faction_key, acts in FACTION_ACTIVITIES.items():
+        meta = FACTION_META[faction_key]
         lines = "\n".join(
-            f"{'👑 ' if a.is_boss else '▸ '}**{a.name}**  {a.range_str}"
+            f"▸ **{a.name}** — {a.range_str} {meta['currency']}"
             for a in acts
-            if "Individual" not in a.name
         )
         embed.add_field(
             name=f"{faction_emojis[meta['label']]}  {meta['label']}  ({meta['currency']})",
@@ -471,8 +496,7 @@ def build_suit_calculator_embed() -> discord.Embed:
         )
 
     embed.set_footer(
-        text="Point values are community averages and may vary slightly per run.  "
-             "LanceAQuack TTR"
+        text="Point quotas sourced from official TTR suit charts.  LanceAQuack TTR"
     )
     return embed
 
@@ -482,42 +506,56 @@ def build_suit_calculator_embed() -> discord.Embed:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def register_calculate(bot) -> None:
-    """Register the /calculate slash command on bot.tree."""
 
     @bot.tree.command(
         name="calculate",
-        description=(
-            "[User Command] Calculate remaining suit points and get 3 optimised activity plans."
-        ),
+        description="[User Command] Calculate remaining suit points and get 3 optimised activity plans.",
     )
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.describe(
-        suit="Suit name or abbreviation, e.g. TBC, Robber Baron, RB2.0",
-        level="Your current suit level (1–12)",
-        current_points="Points already earned toward your next promotion",
+        suit="Suit name or abbreviation, e.g. MH, TBC, Robber Baron, BW2.0",
+        level="Level number shown next to your suit in-game (e.g. 12 for MH12)",
+        current_points="Points already earned toward this level's quota (0 = just ranked up)",
     )
     async def calculate(
         interaction: discord.Interaction,
         suit: str,
-        level: app_commands.Range[int, 1, 12],
+        level: app_commands.Range[int, 1, 50],
         current_points: app_commands.Range[int, 0, 500_000],
     ) -> None:
-
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         result = resolve_suit(suit)
         if result is None:
             await interaction.followup.send(
                 f"❌  **Unknown suit:** `{suit}`\n"
-                "Check `#suit-calculator` for the full list of suit names and abbreviations.",
+                "Check `#suit-calculator` for the full abbreviation list.",
                 ephemeral=True,
             )
             return
 
-        _, suit_name, faction, is_v2 = result
-        quotas = LEVEL_QUOTAS_V2 if is_v2 else LEVEL_QUOTAS
-        quota  = quotas.get(level, LEVEL_QUOTAS[MAX_LEVEL])
+        user_abbr, suit_name, faction, chart_key, is_v2 = result
+
+        level_map = QUOTAS[faction][chart_key]
+        if level not in level_map:
+            lo, hi = min(level_map), max(level_map)
+            await interaction.followup.send(
+                f"❌  **{suit_name}** uses levels **{lo}–{hi}**. "
+                f"You entered `{level}`.",
+                ephemeral=True,
+            )
+            return
+
+        quota = level_map[level]
+
+        if quota == 0:
+            await interaction.followup.send(
+                f"🎉  **{suit_name}** at level {level} is **Maxed** — "
+                "nothing left to earn!",
+                ephemeral=True,
+            )
+            return
 
         if current_points >= quota:
             await interaction.followup.send(
@@ -527,11 +565,10 @@ def register_calculate(bot) -> None:
             )
             return
 
-        pts_remaining = quota - current_points
-        activities    = FACTION_ACTIVITIES[faction]
-        options       = build_options(pts_remaining, activities)
-        embed         = build_result_embed(
+        meta    = FACTION_META[faction]
+        options = build_options(quota - current_points, FACTION_ACTIVITIES[faction],
+                                meta["currency"])
+        embed   = build_result_embed(
             suit_name, faction, level, current_points, quota, is_v2, options,
         )
-
         await interaction.followup.send(embed=embed, ephemeral=True)
