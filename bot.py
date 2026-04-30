@@ -1301,3 +1301,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
+_subprocess.run(
+    ["git", "branch", "--set-upstream-to=origin/main", "master"],
+    cwd=_BOT_DIR, capture_output=True,
+)
