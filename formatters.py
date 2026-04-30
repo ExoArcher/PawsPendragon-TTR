@@ -1078,7 +1078,7 @@ def format_sillymeter(data: dict[str, Any] | None) -> discord.Embed:
       winnerId          -- int        0 while no winner
       hp                -- int        accumulated points so far (total goal = 5,000,000)
       asOf              -- int        unix timestamp of this snapshot
-      nextUpdateTimestamp -- int      when meter next ticks
+      nextUpdateTimestamp -- int      when meter next ticks / next cycle begins
     """
     embed = discord.Embed(title=":circus_tent: Silly Meter", color=TTR_COLOR)
 
@@ -1087,17 +1087,24 @@ def format_sillymeter(data: dict[str, Any] | None) -> discord.Embed:
         _footer(embed, None)
         return embed
 
-    state   = (data.get("state") or "").strip()
-    winner  = (data.get("winner") or "").strip()
-    rewards = data.get("rewards") or []
-    descs   = data.get("rewardDescriptions") or []
-    hp      = data.get("hp")
-    as_of   = data.get("asOf")
+    state      = (data.get("state") or "").strip()
+    winner     = (data.get("winner") or "").strip()
+    rewards    = data.get("rewards") or []
+    descs      = data.get("rewardDescriptions") or []
+    hp         = data.get("hp")
+    as_of      = data.get("asOf")
+    next_ts    = data.get("nextUpdateTimestamp")
 
     if not isinstance(rewards, list):
         rewards = []
     if not isinstance(descs, list):
         descs = []
+
+    # Determine accumulated points
+    try:
+        accumulated = int(hp) if hp is not None else 0
+    except (TypeError, ValueError):
+        accumulated = 0
 
     # ---- REWARDING: a winning team is active ----------------------------
     if winner:
@@ -1108,28 +1115,17 @@ def format_sillymeter(data: dict[str, Any] | None) -> discord.Embed:
         body += "\n\n*The Silly Meter has been filled. Enjoy the rewards while they last!*"
         embed.description = body
 
-    # ---- ACTIVE: meter is filling up ------------------------------------
-    else:
-        desc_line = "**The Silly Meter is filling up...**"
-        if hp is not None:
-            try:
-                accumulated = int(hp)
-                remaining   = max(0, _SILLYMETER_TOTAL - accumulated)
-                pct         = min(100, accumulated / _SILLYMETER_TOTAL * 100)
-                desc_line  += (
-                    f"\n***{remaining:,} Global Silly Points to go!***"
-                    f"\n\u200b\n{accumulated:,} / {_SILLYMETER_TOTAL:,} ({pct:.0f}%)"
-                )
-            except (TypeError, ValueError):
-                pass
-        embed.description = desc_line
-
+    # ---- COOLING DOWN: meter full, between cycles -----------------------
+    elif accumulated >= _SILLYMETER_TOTAL or state.lower() not in ("", "active"):
+        embed.description = (
+            "**The Silly Meter is cooling down...**"
+            "\n*Here\'s a sneak peek at the upcoming rewards!*"
+        )
         if rewards:
             team_blocks: list[str] = []
             for i, api_name in enumerate(rewards):
                 api_name = api_name.strip()
                 wiki_name, emoji, wiki_desc = _team_info(api_name)
-                # Prefer wiki description; fall back to API's own description
                 display_desc = wiki_desc or (descs[i] if i < len(descs) else "")
                 block = f"{emoji} **{wiki_name}**"
                 if display_desc:
@@ -1137,8 +1133,43 @@ def format_sillymeter(data: dict[str, Any] | None) -> discord.Embed:
                 team_blocks.append(block)
             if team_blocks:
                 embed.add_field(
-                    name="Competing Teams",
+                    name="Upcoming Rewards",
                     value="\n\u200b\n".join(team_blocks),
+                    inline=False,
+                )
+        if next_ts:
+            try:
+                embed.add_field(
+                    name="\u200b",
+                    value=f":clock3: **Next Silly Cycle begins** <t:{int(next_ts)}:R> — <t:{int(next_ts)}:t>",
+                    inline=False,
+                )
+            except (TypeError, ValueError):
+                pass
+
+    # ---- ACTIVE: meter is filling up ------------------------------------
+    else:
+        remaining = max(0, _SILLYMETER_TOTAL - accumulated)
+        pct       = min(100, accumulated / _SILLYMETER_TOTAL * 100)
+        embed.description = (
+            "**The Silly Meter is filling up...**"
+            f"\n***{remaining:,} Global Silly Points to go!***"
+            f"\n\u200b\n{accumulated:,} / {_SILLYMETER_TOTAL:,} ({pct:.0f}%)"
+        )
+        if rewards:
+            team_blocks_active: list[str] = []
+            for i, api_name in enumerate(rewards):
+                api_name = api_name.strip()
+                wiki_name, emoji, wiki_desc = _team_info(api_name)
+                display_desc = wiki_desc or (descs[i] if i < len(descs) else "")
+                block = f"{emoji} **{wiki_name}**"
+                if display_desc:
+                    block += f"\n***{display_desc}***"
+                team_blocks_active.append(block)
+            if team_blocks_active:
+                embed.add_field(
+                    name="Competing Teams",
+                    value="\n\u200b\n".join(team_blocks_active),
                     inline=False,
                 )
 
