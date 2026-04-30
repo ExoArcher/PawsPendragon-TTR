@@ -1126,9 +1126,9 @@ class TTRBot(discord.AutoShardedClient):
                 f"**Permissions requested**\n"
                 f"This is a **User App install** -- it does **not** join your server and "
                 f"requires **no server permissions**. "
-                f"It only adds the slash commands `/ttrinfo`, `/doodleinfo`, `/helpme`, "
-                f"`/invite-app` and `/invite-server` to your personal Discord account, "
-                f"usable in any server, DM, or group chat."
+                f"It adds the slash commands `/ttrinfo`, `/doodleinfo`, `/calculate`, "
+                f"`/beanfest`, `/helpme`, `/invite-app`, and `/invite-server` to your "
+                f"personal Discord account, usable in any server, DM, or group chat."
             )
             try:
                 await interaction.user.send(msg)
@@ -1149,7 +1149,7 @@ class TTRBot(discord.AutoShardedClient):
             link = (
                 "https://discord.com/oauth2/authorize"
                 "?client_id=1496971496709689654"
-                "&permissions=17600776062032"
+                "&permissions=7318489585232976"
                 "&scope=bot+applications.commands"
             )
             msg = (
