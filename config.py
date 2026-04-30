@@ -1,0 +1,116 @@
+"""Centralised config loaded from environment (.env).
+
+The bot is multi-guild: it can serve as many Discord servers as you list
+in ``GUILD_ALLOWLIST``. Channel/category names and the refresh interval
+are global — the same defaults apply to every guild.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _required(name: str) -> str:
+    val = os.getenv(name)
+    if not val:
+        raise RuntimeError(
+            f"Missing required environment variable: {name}. "
+            f"Copy .env.example to .env and fill it in."
+        )
+    return val
+
+
+def _parse_id_list(raw: str | None, *, var_name: str = "GUILD_ALLOWLIST") -> frozenset[int]:
+    """Parse a comma- or whitespace-separated list of Discord IDs."""
+    if not raw:
+        return frozenset()
+    out: set[int] = set()
+    for chunk in raw.replace(",", " ").split():
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            out.add(int(chunk))
+        except ValueError:
+            raise RuntimeError(
+                f"{var_name} contains a non-numeric entry: {chunk!r}"
+            )
+    return frozenset(out)
+
+
+def _int_env(name: str, default: int) -> int:
+    """Read an int env var, falling back to *default* if missing or blank."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise RuntimeError(
+            f"Environment variable {name} must be an integer, got {raw!r}"
+        )
+
+
+@dataclass(frozen=True)
+class Config:
+    token: str
+    # Guilds seeded into the runtime allowlist from .env. The effective
+    # allowlist is the union of env + state.json.
+    guild_allowlist: frozenset[int]
+    # Discord user IDs that may use bot-admin commands.
+    # Defaults to ExoArcher's ID if BOT_ADMIN_IDS is not set.
+    admin_ids: frozenset[int]
+    refresh_interval: int
+    user_agent: str
+    category_name: str
+    channel_information: str
+    channel_doodles: str
+    channel_suit_calculator: str
+
+    @classmethod
+    def load(cls) -> "Config":
+        return cls(
+            token=_required("DISCORD_TOKEN"),
+            guild_allowlist=_parse_id_list(
+                os.getenv("GUILD_ALLOWLIST"), var_name="GUILD_ALLOWLIST"
+            ),
+            admin_ids=_parse_id_list(
+                os.getenv("BOT_ADMIN_IDS") or "310233741354336257",
+                var_name="BOT_ADMIN_IDS",
+            ),
+            refresh_interval=_int_env("REFRESH_INTERVAL", default=90),
+            user_agent=os.getenv(
+                "USER_AGENT", "ttr-discord-bot (https://github.com/)"
+            ),
+            category_name=os.getenv("CHANNEL_CATEGORY", "Toontown Rewritten"),
+            channel_information=os.getenv(
+                "CHANNEL_INFORMATION", "tt-information"
+            ),
+            channel_doodles=os.getenv("CHANNEL_DOODLES", "tt-doodles"),
+            channel_suit_calculator=os.getenv(
+                "CHANNEL_SUIT_CALCULATOR", "suit-calculator"
+            ),
+        )
+
+    def feeds(self) -> dict[str, str]:
+        """Mapping of feed key -> default channel name.
+
+        Note: #suit-calculator is NOT included here — it is static and
+        updated only on startup and /pd-refresh, not on the 90-second loop.
+        """
+        return {
+            "information": self.channel_information,
+            "doodles": self.channel_doodles,
+        }
+
+    def is_guild_allowed(self, guild_id: int) -> bool:
+        """Static .env allowlist check. The bot combines this with the
+        runtime allowlist in state.json before deciding to leave a guild."""
+        return guild_id in self.guild_allowlist
+
+    def is_admin(self, user_id: int) -> bool:
+        return user_id in self.admin_ids
