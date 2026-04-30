@@ -27,13 +27,14 @@ import discord
 
 log = logging.getLogger("ttr-bot.console")
 
-COMMANDS = ("stop", "restart", "maintenance")
+COMMANDS = ("stop", "restart", "maintenance", "announce")
 
 HELP_TEXT = (
     "[console] Available commands:\n"
-    "  stop        -- Notify all servers of maintenance, then shut down.\n"
-    "  restart     -- Notify all servers of a restart, then restart the process.\n"
-    "  maintenance -- Toggle maintenance mode banner on/off in all server channels."
+    "  stop           -- Notify all servers of maintenance, then shut down.\n"
+    "  restart        -- Notify all servers of a restart, then restart the process.\n"
+    "  maintenance    -- Toggle maintenance mode banner on/off in all server channels.\n"
+    "  announce <msg> -- Broadcast a message to every tracked server (auto-deletes in 30 min)."
 )
 
 _MAINT_MODE_FILE = Path(__file__).with_name("maintenance_mode.json")
@@ -76,6 +77,13 @@ async def run_console(bot) -> None:
 
         elif cmd in ("help", "?"):
             print(HELP_TEXT, flush=True)
+
+        elif cmd.startswith("announce"):
+            announce_text = line.strip()[len("announce"):].strip()
+            if not announce_text:
+                print("[console] Usage: announce <message text>", flush=True)
+            else:
+                await _handle_announce(bot, announce_text)
 
         else:
             print(f"[console] Unknown command: '{cmd}'.\n{HELP_TEXT}", flush=True)
@@ -245,6 +253,38 @@ async def _handle_maintenance(bot) -> None:
             f"[console] Maintenance mode ON -- {sent} banner(s) posted, {failed} failed.",
             flush=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# Announce
+# ---------------------------------------------------------------------------
+
+async def _handle_announce(bot, text: str) -> None:
+    """
+    Broadcast an announcement to every tracked guild's #tt-information channel.
+    Delegates to bot._broadcast_announcement() which posts a yellow embed that
+    auto-deletes after 30 minutes.
+    """
+    print(f"[console] ANNOUNCE: {text!r}", flush=True)
+    log.info("[console] Announce broadcast: %s", text)
+    try:
+        sent, failed, guilds_touched = await bot._broadcast_announcement(text)
+        if sent == 0:
+            print(
+                "[console] Broadcast sent 0 messages -- "
+                "no servers are tracked or the bot may have lost channel permissions.",
+                flush=True,
+            )
+        else:
+            print(
+                f"[console] Broadcast complete: {sent} message(s) across "
+                f"{guilds_touched} server(s)"
+                + (f", {failed} failed" if failed else "") + ".",
+                flush=True,
+            )
+    except Exception as exc:
+        log.exception("[console] Announce broadcast failed: %s", exc)
+        print(f"[console] Announce failed: {exc}", flush=True)
 
 
 # ---------------------------------------------------------------------------

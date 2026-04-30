@@ -1,4 +1,4 @@
-# LanceAQuack TTR – V1.1
+# LanceAQuack TTR – V1.2
 
 Multi-guild Discord bot that mirrors the public Toontown Rewritten APIs into live-updating channels. One hosted instance can serve multiple Discord servers from a single allowlist. Also installable as a **User App** — no server required.
 
@@ -37,15 +37,16 @@ Require **Manage Channels** and **Manage Messages**.
 | `/laq-refresh` | Force an immediate data refresh and sweep stale messages. |
 | `/laq-teardown` | Stop tracking this server. Channels are kept but no longer updated. |
 
-### Bot admin commands
-Restricted to user IDs listed in `BOT_ADMIN_IDS` in `.env`.
+### Console commands
+Typed directly into the Cybrancee hosting panel console (stdin).
 
 | Command | Description |
 |---|---|
-| `/laq-ban <user_id> [reason]` | Ban a user from all bot commands by Discord ID. Reason and timestamp are stored in `banned_users.json`. |
-| `/laq-unban <user_id>` | Remove a user's ban. Access restored immediately. |
-| `/laq-banlist` | List all currently banned users with their ID, ban date, banning admin, and reason. |
-| `/laq-announce <text>` | Broadcast a message to every tracked server's `#tt-information` channel. Auto-deletes after 30 minutes. |
+| `stop` | Notify all servers of maintenance, then shut down. |
+| `restart` | Notify all servers of a restart, then hot-restart the process. |
+| `maintenance` | Toggle maintenance mode banner on/off in all tracked server channels. |
+| `announce <text>` | Broadcast a message to every tracked server's `#tt-information` channel. Auto-deletes after 30 minutes. |
+| `help` | List available console commands. |
 
 ---
 
@@ -67,7 +68,7 @@ Use `/invite-app` for the personal install link, or `/invite-server` to add it t
 
 **Panel announcements** — create `panel_announce.txt` in the hosting file manager. The bot picks it up within 90 seconds, broadcasts it to every tracked server, and deletes the file.
 
-**Ban system** — bot admins can block abusive users from all commands by Discord ID via `/laq-ban`. All records (reason, timestamp, banning admin) are stored in `banned_users.json`. Banned users receive an ephemeral rejection message on every blocked attempt.
+**Ban system** — the ban list in `banned_users.json` blocks abusive users from all commands by Discord ID. Banned users receive an ephemeral rejection message on every blocked attempt. Records store the reason, timestamp, and banning admin. Edit `banned_users.json` directly to add or remove entries.
 
 **Teardown logging** — every `/laq-teardown` is appended to `teardown_log.txt` with the guild ID, server name, owner name, owner ID, and the user who invoked it.
 
@@ -95,7 +96,8 @@ For full setup instructions see **`DEPLOY.md`**.
 
 | File | Purpose |
 |---|---|
-| `bot.py` | Multi-guild bot core. Commands, refresh loop, allowlist enforcement, ban system, maintenance notices. |
+| `bot.py` | Multi-guild bot core. Commands, refresh loop, allowlist enforcement, ban enforcement, maintenance notices. |
+| `Console.py` | Hosting panel stdin handler. Commands: `stop`, `restart`, `maintenance`, `announce`. |
 | `config.py` | Loads `.env` into a typed `Config`. Parses `GUILD_ALLOWLIST`, `BOT_ADMIN_IDS`, etc. |
 | `formatters.py` | Renders TTR API JSON into Discord embeds (information, doodles, Silly Meter). |
 | `ttr_api.py` | Async aiohttp client for the public TTR endpoints. |
@@ -115,10 +117,17 @@ For full setup instructions see **`DEPLOY.md`**.
 
 ## Version history
 
-**V1.1** — Current release.
+**V1.2** — Current release.
+- Console command: `announce <text>` — broadcasts to all servers from the hosting panel (replaces `/laq-announce`).
+- Console command: `maintenance` — toggles a persistent orange banner in both `#tt-information` and `#tt-doodles` across all guilds. State survives restarts via `maintenance_mode.json`.
+- Console commands: `stop` and `restart` — each notifies all servers before acting.
+- Removed all bot-admin Discord slash commands (`/laq-ban`, `/laq-unban`, `/laq-banlist`, `/laq-announce`). Ban enforcement remains; manage `banned_users.json` directly.
+- Discord 503 transient error handling: `_ensure_messages` and `_update_feed` now catch `discord.HTTPException` to survive brief API outages.
+
+**V1.1**
 - User App install support (`/ttrinfo`, `/doodleinfo`, `/helpme`, `/invite-app`, `/invite-server` work outside servers).
 - Silly Meter embed in `#tt-information` with team descriptions, accumulated points, and percentage display.
-- Ban system: `/laq-ban`, `/laq-unban`, `/laq-banlist` with persistent `banned_users.json` records.
+- Ban system with persistent `banned_users.json` records.
 - Maintenance embed broadcast on shutdown; auto-deleted on next startup.
 - First-use welcome DM for new User App installs.
 - Auto-update from GitHub on every startup using hash comparison to prevent restart loops.

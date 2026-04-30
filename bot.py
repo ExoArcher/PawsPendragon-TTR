@@ -27,9 +27,12 @@ Slash commands (Manage Channels + Manage Messages)
 ``/laq-setup``    -- create channels and start tracking this guild.
 ``/laq-teardown`` -- stop tracking this guild (channels are NOT deleted).
 
-Slash commands (bot owner only)
---------------------------------
-``/laq-announce`` -- broadcast a message to every tracked guild.
+Console commands
+----------------
+``announce <text>`` -- broadcast a message to every tracked guild (auto-deletes in 30 min).
+``maintenance``     -- toggle maintenance mode banner in all tracked guild channels.
+``stop``            -- notify all servers of shutdown, then exit.
+``restart``         -- notify all servers, then hot-restart the process.
 
 Panel announcements
 -------------------
@@ -1028,144 +1031,6 @@ class TTRBot(discord.Client):
             except discord.Forbidden:
                 await interaction.response.send_message(msg, ephemeral=True)
 
-        # -- /laq-ban  (bot admins only) -------------------------------------
-        @self.tree.command(
-            name="laq-ban",
-            description="[Bot Admin Command] Ban a user from all LanceAQuack TTR commands by Discord ID.",
-        )
-        @app_commands.describe(
-            user_id="The Discord user ID to ban.",
-            reason="Reason for the ban (shown to the user and stored in the log).",
-        )
-        @app_commands.guild_only()
-        async def laq_ban(interaction: discord.Interaction, user_id: str, reason: str = "No reason provided.") -> None:
-            if not self.config.is_admin(interaction.user.id):
-                await interaction.response.send_message(
-                    f"This command is restricted to bot admins. Your ID `{interaction.user.id}` is not in `BOT_ADMIN_IDS`.",
-                    ephemeral=True,
-                )
-                return
-            user_id = user_id.strip()
-            if not user_id.isdigit():
-                await interaction.response.send_message(
-                    "Invalid user ID -- must be a numeric Discord snowflake (e.g. `123456789012345678`).",
-                    ephemeral=True,
-                )
-                return
-            uid = int(user_id)
-            banned = self._load_banned()
-            if user_id in banned:
-                await interaction.response.send_message(
-                    f"User `{user_id}` is already banned.\n"
-                    f"**Current reason:** {banned[user_id].get('reason', 'none')}\n"
-                    f"Use `/laq-unban` first if you want to update the record.",
-                    ephemeral=True,
-                )
-                return
-            import time as _time
-            ts = _time.strftime("%Y-%m-%d %H:%M:%S UTC", _time.gmtime())
-            banned[user_id] = {
-                "reason":      reason.strip(),
-                "banned_at":   ts,
-                "banned_by":   str(interaction.user),
-                "banned_by_id": interaction.user.id,
-            }
-            self._save_banned(banned)
-            log.warning(
-                "BANNED user %s by %s (%s): %s",
-                user_id, interaction.user, interaction.user.id, reason,
-            )
-            # Attempt to resolve a username for the confirmation message
-            display = f"`{user_id}`"
-            try:
-                fetched = await self.fetch_user(uid)
-                display = f"{fetched} (`{user_id}`)"
-            except Exception:
-                pass
-            await interaction.response.send_message(
-                f":no_entry: **Banned** {display}\n"
-                f"**Reason:** {reason}\n"
-                f"**Banned at:** {ts}\n\n"
-                f"They will be blocked from all bot commands immediately.",
-                ephemeral=True,
-            )
-
-        # -- /laq-unban  (bot admins only) -----------------------------------
-        @self.tree.command(
-            name="laq-unban",
-            description="[Bot Admin Command] Remove a user's ban from LanceAQuack TTR by Discord ID.",
-        )
-        @app_commands.describe(user_id="The Discord user ID to unban.")
-        @app_commands.guild_only()
-        async def laq_unban(interaction: discord.Interaction, user_id: str) -> None:
-            if not self.config.is_admin(interaction.user.id):
-                await interaction.response.send_message(
-                    f"This command is restricted to bot admins. Your ID `{interaction.user.id}` is not in `BOT_ADMIN_IDS`.",
-                    ephemeral=True,
-                )
-                return
-            user_id = user_id.strip()
-            if not user_id.isdigit():
-                await interaction.response.send_message(
-                    "Invalid user ID -- must be a numeric Discord snowflake.",
-                    ephemeral=True,
-                )
-                return
-            banned = self._load_banned()
-            record = banned.pop(user_id, None)
-            if record is None:
-                await interaction.response.send_message(
-                    f"User `{user_id}` is not in the ban list.", ephemeral=True
-                )
-                return
-            self._save_banned(banned)
-            log.info("UNBANNED user %s by %s (%s)", user_id, interaction.user, interaction.user.id)
-            display = f"`{user_id}`"
-            try:
-                fetched = await self.fetch_user(int(user_id))
-                display = f"{fetched} (`{user_id}`)"
-            except Exception:
-                pass
-            await interaction.response.send_message(
-                f":white_check_mark: **Unbanned** {display}\n"
-                f"They can now use all bot commands again.",
-                ephemeral=True,
-            )
-
-        # -- /laq-banlist  (bot admins only) ---------------------------------
-        @self.tree.command(
-            name="laq-banlist",
-            description="[Bot Admin Command] View all users currently banned from LanceAQuack TTR.",
-        )
-        @app_commands.guild_only()
-        async def laq_banlist(interaction: discord.Interaction) -> None:
-            if not self.config.is_admin(interaction.user.id):
-                await interaction.response.send_message(
-                    f"This command is restricted to bot admins. Your ID `{interaction.user.id}` is not in `BOT_ADMIN_IDS`.",
-                    ephemeral=True,
-                )
-                return
-            banned = self._load_banned()
-            if not banned:
-                await interaction.response.send_message(
-                    ":white_check_mark: The ban list is currently empty.", ephemeral=True
-                )
-                return
-            lines = [f":no_entry: **LanceAQuack TTR -- Banned Users** ({len(banned)} total)\n"]
-            for uid_str, rec in banned.items():
-                reason   = rec.get("reason", "No reason given.")
-                banned_at = rec.get("banned_at", "unknown")
-                banned_by = rec.get("banned_by", "unknown")
-                lines.append(
-                    f"\u2022 **ID:** `{uid_str}` | **Banned:** {banned_at} | "
-                    f"**By:** {banned_by} | **Reason:** {reason}"
-                )
-            msg = "\n".join(lines)
-            # Discord message limit safety
-            if len(msg) > 1900:
-                msg = msg[:1900] + "\n... (truncated, check banned_users.json for full list)"
-            await interaction.response.send_message(msg, ephemeral=True)
-
         # -- /laq-setup  (Manage Channels + Manage Messages) --------------
         @self.tree.command(
             name="laq-setup",
@@ -1283,51 +1148,6 @@ class TTRBot(discord.Client):
                 log.warning("Could not write teardown log: %s", exc)
 
         self._log_teardown = self_log_teardown
-
-        # -- admin-only guard ----------------------------------------------
-        async def _reject_non_admin(interaction: discord.Interaction) -> bool:
-            if not self.config.is_admin(interaction.user.id):
-                log.info("Rejecting non-admin %s (id=%s)", interaction.user, interaction.user.id)
-                await interaction.response.send_message(
-                    f"This command is restricted to bot admins. "
-                    f"Your user ID `{interaction.user.id}` is not in `BOT_ADMIN_IDS`.",
-                    ephemeral=True,
-                )
-                return True
-            return False
-
-        # -- /laq-announce  (owner only) -----------------------------------
-        @self.tree.command(
-            name="laq-announce",
-            description="[Bot Admin Command] Broadcast a message to every tracked server. Auto-deletes in 30 min.",
-        )
-        @app_commands.describe(text="The announcement text to send to every tracked server.")
-        async def laq_announce(interaction: discord.Interaction, text: str) -> None:
-            if await _reject_non_admin(interaction):
-                return
-            text = text.strip()
-            if not text:
-                await interaction.response.send_message("Announcement text cannot be empty.", ephemeral=True)
-                return
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            sent, failed, guilds_touched = await self._broadcast_announcement(text)
-            tracked = len(self._guilds_block())
-            ttl_min = ANNOUNCEMENT_TTL_SECONDS // 60
-            if sent == 0:
-                msg = (
-                    "Broadcast sent **0** messages -- no servers are tracked yet. "
-                    "Run `/laq-setup` in each server first."
-                    if tracked == 0 else
-                    f"Broadcast sent **0** messages despite {tracked} tracked server(s). "
-                    "Check the console log -- the bot may have lost channel permissions."
-                )
-            else:
-                msg = (
-                    f"Broadcast complete: **{sent}** message(s) across **{guilds_touched}** server(s)"
-                    + (f", {failed} failed" if failed else "")
-                    + f". Auto-deletes in {ttl_min} min."
-                )
-            await interaction.followup.send(msg, ephemeral=True)
 
 
 
