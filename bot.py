@@ -246,6 +246,7 @@ class TTRBot(discord.AutoShardedClient):
     async def setup_hook(self) -> None:
         self._api = TTRApiClient(self.config.user_agent)
         await self._api.__aenter__()
+        print("[API Client] Loaded successfully", flush=True)
 
         # Push an empty global command list to Discord, wiping any stale
         # global commands (ttr_refresh, pd_guild_add, etc.).
@@ -256,6 +257,7 @@ class TTRBot(discord.AutoShardedClient):
         # They will be synced per-guild in on_ready / on_guild_join,
         # which prevents Discord from showing global + guild duplicates.
         self._register_commands()
+        print("[Commands] Registered successfully", flush=True)
 
     async def close(self) -> None:
         """Broadcast maintenance notices then shut down cleanly."""
@@ -297,19 +299,29 @@ class TTRBot(discord.AutoShardedClient):
             if not self.is_guild_allowed(guild.id):
                 continue
             await self._sync_commands_to_guild(guild)
+            print(f"[{guild.name}] [{guild.id}] Joined Successfully", flush=True)
 
         await self._cleanup_maintenance_msgs()
+        print("[Maintenance Cleanup] Loaded successfully", flush=True)
         await clear_maintenance_on_startup(self)
         asyncio.create_task(run_console(self), name="console-listener")
+        print("[Console Listener] Loaded successfully", flush=True)
         await self._cleanup_announcements_on_startup()
+        print("[Announcement Cleanup] Loaded successfully", flush=True)
         await self._refresh_suit_calculator_all_guilds()
+        print("[Suit Calculator] Loaded successfully", flush=True)
         await self._save_state()
 
         if not self._refresh_loop.is_running():
             self._refresh_loop.change_interval(seconds=self.config.refresh_interval)
             self._refresh_loop.start()
+        print("[Live Feed Loop] Loaded successfully", flush=True)
         if not self._sweep_loop.is_running():
             self._sweep_loop.start()
+        print("[Sweep Loop] Loaded successfully", flush=True)
+
+        guild_count = len([g for g in self.guilds if self.is_guild_allowed(g.id)])
+        print(f"Paws Pendragon TTR is online in {guild_count} server(s).", flush=True)
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         if not self.is_guild_allowed(guild.id):
