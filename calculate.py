@@ -529,7 +529,7 @@ def build_result_embed(
 
 def build_suit_calculator_embeds() -> list[discord.Embed]:
     """Return the 4 static info embeds posted in #suit-calculator."""
-    STATIC_COLOR = 0x9B59B6
+    STATIC_COLOR = 0x9124F2
     faction_emojis = {
         "Sellbot": "\U0001f4bc",
         "Cashbot": "\U0001f4b0",

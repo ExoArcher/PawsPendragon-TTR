@@ -392,7 +392,7 @@ class TTRBot(discord.AutoShardedClient):
 
     async def _send_placeholder(self, key: str, channel: discord.TextChannel) -> discord.Message:
         msg = await channel.send(embed=discord.Embed(
-            title=f"Loading {key}...", description="Fetching the latest data from TTR.", color=0xa981ce,
+            title=f"Loading {key}...", description="Fetching the latest data from TTR.", color=0x9124F2,
         ))
         try:
             await msg.pin(reason="Live TTR feed pin")
@@ -610,7 +610,7 @@ class TTRBot(discord.AutoShardedClient):
         for mid in ids[len(embeds):]:
             try:
                 await (await channel.fetch_message(mid)).edit(
-                    embed=discord.Embed(description="*(no data for this tier right now)*", color=0xa981ce)
+                    embed=discord.Embed(description="*(no data for this tier right now)*", color=0x9124F2)
                 )
                 kept_ids.append(mid)
                 edited += 1
@@ -729,7 +729,7 @@ class TTRBot(discord.AutoShardedClient):
     # ── ANNOUNCEMENTS ─────────────────────────────────────────────────────────
 
     async def _broadcast_announcement(self, text: str) -> tuple[int, int, int]:
-        embed = discord.Embed(title=ANNOUNCEMENT_TITLE, description=text, color=0xa981ce)
+        embed = discord.Embed(title=ANNOUNCEMENT_TITLE, description=text, color=0x9124F2)
         embed.set_footer(text=f"This message will auto-delete in {ANNOUNCEMENT_TTL_SECONDS // 60} minutes.")
         expires_at     = time.time() + ANNOUNCEMENT_TTL_SECONDS
         sent = failed  = 0
@@ -837,7 +837,7 @@ class TTRBot(discord.AutoShardedClient):
                 "Please check [toonhq.org](https://toonhq.org) in the "
                 "meantime for your toony needs!"
             ),
-            color=0xa981ce,
+            color=0x9124F2,
             timestamp=datetime.now(timezone.utc),
         )
         maintenance_ids: dict[str, int] = {}
@@ -1067,7 +1067,7 @@ class TTRBot(discord.AutoShardedClient):
                     ":warning: *This bot is currently in Early Access — features are still "
                     "being added and things may change.*"
                 ),
-                color=0xa981ce,
+                color=0x9124F2,
             )
             embed.add_field(
                 name="/ttrinfo",
@@ -1207,7 +1207,7 @@ class TTRBot(discord.AutoShardedClient):
                     "These are **community-run** events and schedules are subject to change. "
                     "Always check with the hosting guild for the latest info."
                 ),
-                color=0xa981ce,
+                color=0x9124F2,
             )
             embed.add_field(
                 name="Wednesday",

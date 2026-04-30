@@ -358,7 +358,7 @@ DEPARTMENTS = {
     "m": "Cashbot",  # some docs use 'm' for Cashbot historically
 }
 
-TTR_COLOR = 0xa981ce
+TTR_COLOR = 0x9124F2
 
 
 # ── FORMAT_INVASIONS ──────────────────────────────────────────────────────────
