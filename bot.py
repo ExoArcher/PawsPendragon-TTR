@@ -1038,37 +1038,6 @@ class TTRBot(discord.Client):
                     ephemeral=True,
                 )
 
-        # ── /helpme  (all users, guild + user install) ─────────────────────
-        @self.tree.command(
-            name="helpme",
-            description="[User Command] Show available bot commands and descriptions.",
-        )
-        @app_commands.allowed_installs(guilds=True, users=True)
-        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-        async def helpme(interaction: discord.Interaction) -> None:
-            if await self._reject_if_banned(interaction):
-                return
-            msg = (
-                "**Paws Pendragon TTR -- Available Commands** :duck:\n\n"
-                ":warning: *This bot is currently in Early Access -- features are still "
-                "being added and things may change.*\n\n"
-                "`/ttrinfo` -- Get the current Toontown district populations, cog invasions, "
-                "field offices, and Silly Meter status sent directly to your DMs.\n\n"
-                "`/doodleinfo` -- Get the full Toontown doodle list with trait ratings and a "
-                "buying guide sent directly to your DMs.\n\n"
-                "`/beanfest` -- Get the weekly Beanfest schedule sent directly to your DMs.\n\n"
-                "`/calculate` -- Cog suit merit/stock options/jury notices calculator.\n\n"
-                "`/invite-app` -- Get the link to add Paws Pendragon TTR to your Discord account.\n\n"
-                "`/invite-server` -- Get the link to add Paws Pendragon TTR to a server.\n\n"
-                "`/helpme` -- Show this message again.\n\n"
-                "`/helpme` -- App-version command list (embed format)."
-            )
-            try:
-                await interaction.user.send(msg)
-                await interaction.response.send_message("Check your DMs! :mailbox_with_mail:", ephemeral=True)
-            except discord.Forbidden:
-                await interaction.response.send_message(msg, ephemeral=True)
-
         # ── /helpme  (all users, guild + user install) ────────────────────
         @self.tree.command(
             name="helpme",
