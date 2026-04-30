@@ -61,7 +61,7 @@ class Config:
     # Guilds seeded into the runtime allowlist from .env. The effective
     # allowlist is the union of env + state.json.
     guild_allowlist: frozenset[int]
-    # Discord user IDs that may use bot-admin commands (/laq-announce).
+    # Discord user IDs that may use bot-admin commands.
     # Defaults to ExoArcher's ID if BOT_ADMIN_IDS is not set.
     admin_ids: frozenset[int]
     refresh_interval: int
@@ -69,6 +69,7 @@ class Config:
     category_name: str
     channel_information: str
     channel_doodles: str
+    channel_suit_calculator: str          # ← new
 
     @classmethod
     def load(cls) -> "Config":
@@ -90,13 +91,18 @@ class Config:
                 "CHANNEL_INFORMATION", "tt-information"
             ),
             channel_doodles=os.getenv("CHANNEL_DOODLES", "tt-doodles"),
+            channel_suit_calculator=os.getenv(          # ← new
+                "CHANNEL_SUIT_CALCULATOR", "suit-calculator"
+            ),
         )
 
     def feeds(self) -> dict[str, str]:
-        """Mapping of feed key -> default channel name."""
+        """Mapping of live-feed key -> default channel name.
+        These channels are auto-updated by the refresh loop.
+        #suit-calculator is static (info embed only) so it is NOT included here."""
         return {
             "information": self.channel_information,
-            "doodles": self.channel_doodles,
+            "doodles":     self.channel_doodles,
         }
 
     def is_guild_allowed(self, guild_id: int) -> bool:
