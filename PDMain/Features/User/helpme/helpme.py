@@ -51,7 +51,7 @@ def _build_command_list_embed(is_admin: bool) -> discord.Embed:
     Args
     ----
     is_admin : bool
-        If True, includes admin commands (/pd-setup, /pd-refresh, /pd-teardown).
+        If True, includes admin commands (/pdsetup, /pdrefresh, /pdteardown).
 
     Returns
     -------
@@ -107,17 +107,17 @@ def _build_command_list_embed(is_admin: bool) -> discord.Embed:
             inline=False,
         )
         embed.add_field(
-            name="/pd-setup",
+            name="/pdsetup",
             value="**[Admin]** Create the TTR feed channels in this server and start tracking them.",
             inline=False,
         )
         embed.add_field(
-            name="/pd-refresh",
+            name="/pdrefresh",
             value="**[Admin]** Force an immediate refresh of TTR feeds in this server.",
             inline=False,
         )
         embed.add_field(
-            name="/pd-teardown",
+            name="/pdteardown",
             value="**[Admin]** Stop TTR feed tracking in this server. Channels are kept; delete them manually if needed.",
             inline=False,
         )

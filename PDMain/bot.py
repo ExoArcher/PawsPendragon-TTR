@@ -1224,14 +1224,14 @@ class TTRBot(discord.AutoShardedClient):
             except discord.Forbidden:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        # ── /pd-setup  (Manage Channels + Manage Messages) ────────────────
+        # ── /pdsetup  (bot-admins / guild managers only) ────────────────
         @self.tree.command(
-            name="pd-setup",
+            name="pdsetup",
             description="[Server Admin Command] Create the TTR feed channels in this server and start tracking them.",
         )
         @app_commands.default_permissions(manage_channels=True, manage_messages=True)
         @app_commands.guild_only()
-        async def pd_setup(interaction: discord.Interaction) -> None:
+        async def pdsetup(interaction: discord.Interaction) -> None:
             guild = interaction.guild
             if guild is None:
                 await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
@@ -1271,15 +1271,15 @@ class TTRBot(discord.AutoShardedClient):
                 ephemeral=True,
             )
 
-        # ── /pd-refresh  (all users, guild only) ──────────────────────────
+        # ── /pdrefresh  (bot-admins / guild managers only) ──────────────
         _REFRESH_COOLDOWN = 600  # 10 minutes in seconds
 
         @self.tree.command(
-            name="pd-refresh",
+            name="pdrefresh",
             description="[User Command] Force an immediate refresh of TTR feeds in this server.",
         )
         @app_commands.guild_only()
-        async def pd_refresh(interaction: discord.Interaction) -> None:
+        async def pdrefresh(interaction: discord.Interaction) -> None:
             guild = interaction.guild
             if guild is None:
                 await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
@@ -1327,14 +1327,14 @@ class TTRBot(discord.AutoShardedClient):
             tail = f" Cleaned up {swept} old message(s)." if swept else ""
             await interaction.followup.send(f"Refreshed.{tail}", ephemeral=True)
 
-        # ── /pd-teardown  (Manage Channels + Manage Messages) ─────────────
+        # ── /pdteardown  (bot-admins / guild managers only) ─────────────
         @self.tree.command(
-            name="pd-teardown",
+            name="pdteardown",
             description="[Server Admin Command] Stop TTR feed tracking. Channels are kept; delete them manually if needed.",
         )
         @app_commands.default_permissions(manage_channels=True, manage_messages=True)
         @app_commands.guild_only()
-        async def pd_teardown(interaction: discord.Interaction) -> None:
+        async def pdteardown(interaction: discord.Interaction) -> None:
             guild = interaction.guild
             if guild is None:
                 await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
