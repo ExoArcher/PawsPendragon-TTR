@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from Features.Core.db import db
+
 if TYPE_CHECKING:
     from bot import TTRBot
 
@@ -237,7 +239,7 @@ async def _handle_maintenance(bot: TTRBot) -> None:
         bot: TTRBot instance.
     """
     # Load current maintenance state from database
-    stored_mode = await bot.db.load_maint_mode()
+    stored_mode = await db.load_maint_mode()
 
     if stored_mode:
         # ── TURN OFF (delete existing banners) ──────────────────────────────
@@ -280,7 +282,7 @@ async def _maintenance_turn_off(bot: TTRBot, stored_mode: dict) -> None:
                 log.warning("[console] Could not delete maintenance banner %s: %s", msg_id, exc)
                 failed += 1
 
-    await bot.db.save_maint_mode({})
+    await db.save_maint_mode({})
     print(
         f"[console] Maintenance mode OFF -- {removed} banner(s) removed"
         + (f", {failed} failed" if failed else "") + ".",
@@ -349,7 +351,7 @@ async def _maintenance_turn_on(bot: TTRBot) -> None:
         if guild_msgs:
             new_stored[guild_id_str] = guild_msgs
 
-    await bot.db.save_maint_mode(new_stored)
+    await db.save_maint_mode(new_stored)
     print(
         f"[console] Maintenance mode ON -- {sent} banner(s) posted"
         + (f", {failed} failed" if failed else "") + ".",
@@ -488,7 +490,7 @@ async def clear_maintenance_on_startup(bot: TTRBot) -> None:
     Args:
         bot: TTRBot instance.
     """
-    stored = await bot.db.load_maint_mode()
+    stored = await db.load_maint_mode()
     if not stored:
         return
 
@@ -515,5 +517,5 @@ async def clear_maintenance_on_startup(bot: TTRBot) -> None:
             except Exception as exc:
                 log.warning("[console] Could not remove startup maintenance banner %s: %s", msg_id, exc)
 
-    await bot.db.save_maint_mode({})
+    await db.save_maint_mode({})
     log.info("[console] Startup: cleared %d maintenance banner(s).", removed)
