@@ -23,8 +23,7 @@ Slash commands (all users)
 ``/ttrinfo``      -- DM current district/invasion/sillymeter info. Works as a User App.
 ``/doodleinfo``   -- DM the full doodle list with ratings. Works as a User App.
 ``/helpme``       -- DM the list of available bot commands.
-``/invite-app``   -- DM the link to add the bot to a personal Discord account.
-``/invite-server``-- DM the link to add the bot to a Discord server.
+``/invite``       -- DM the links to add the bot to a server or personal account.
 ``/pd-refresh``  -- Force an immediate refresh and sweep old messages.
 ``/calculate``    -- Calculate remaining suit points and get optimised activity plans.
 
@@ -1029,6 +1028,8 @@ class TTRBot(discord.AutoShardedClient):
             name="ttrinfo",
             description="[User Command] See current Toontown district, invasion, field office, and Silly Meter info.",
         )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def ttrinfo(interaction: discord.Interaction) -> None:
             if await self._reject_if_banned(interaction):
                 return
@@ -1067,6 +1068,8 @@ class TTRBot(discord.AutoShardedClient):
             name="doodleinfo",
             description="[User Command] See the current Toontown doodle list with trait ratings.",
         )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def doodleinfo(interaction: discord.Interaction) -> None:
             if await self._reject_if_banned(interaction):
                 return
@@ -1091,6 +1094,8 @@ class TTRBot(discord.AutoShardedClient):
             name="helpme",
             description="[User Command] Show available commands for the Paws Pendragon app.",
         )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def help_me(interaction: discord.Interaction) -> None:
             if await self._reject_if_banned(interaction):
                 return
@@ -1123,7 +1128,7 @@ class TTRBot(discord.AutoShardedClient):
                 inline=False,
             )
             embed.add_field(
-                name="/pdinvite",
+                name="/invite",
                 value="Get links to add the bot to a server or your personal account.",
                 inline=False,
             )
@@ -1138,9 +1143,11 @@ class TTRBot(discord.AutoShardedClient):
             except discord.Forbidden:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        # ── /pdinvite  (all users) ──────────────────────────────────────────
-        @self.tree.command(name="pdinvite", description="Get links to invite Paws Pendragon")
-        async def pdinvite(interaction: discord.Interaction) -> None:
+        # ── /invite  (all users) ──────────────────────────────────────────
+        @self.tree.command(name="invite", description="Get links to invite Paws Pendragon")
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def invite(interaction: discord.Interaction) -> None:
             await self._reject_if_banned(interaction)
             bot_id = self.user.id if self.user else "1496971496709689654"
             server_link = (
@@ -1177,6 +1184,8 @@ class TTRBot(discord.AutoShardedClient):
             name="beanfest",
             description="[User Command] View the weekly Beanfest schedule. Events are community-run and subject to change.",
         )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def beanfest(interaction: discord.Interaction) -> None:
             if await self._reject_if_banned(interaction):
                 return

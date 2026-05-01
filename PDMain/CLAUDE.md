@@ -75,8 +75,7 @@ On first run, the bot runs a one-time migration from legacy JSON files (`state.j
 - `/ttrinfo` — DMs you current districts, invasions, field offices, and Silly Meter.
 - `/doodleinfo` — DMs you all available doodles with trait ratings and a buying guide.
 - `/calculate <suit> <level> <current_points>` — shows points to next level with activity recommendations. Suit names or abbreviations; add `2.0` for 2.0 suits (e.g. `RB2.0`).
-- `/invite-app` — DMs you the link to add the bot to your personal Discord account.
-- `/invite-server` — DMs you the link to add the bot to a server.
+- `/invite` — DMs you the links to add the bot to a server or personal account.
 - `/helpme` — DMs you the full command list (or ephemeral if DMs blocked).
 
 **Server admin commands** (require **Manage Channels** and **Manage Messages**):
@@ -131,7 +130,7 @@ At startup, `bot.py` compares local `HEAD` to `origin/main`. If behind, it runs 
 
 ### User App support
 
-Paws Pendragon supports Discord's User App feature. Users can add the bot to their personal account via `/invite-app` and use `/ttrinfo`, `/doodleinfo`, `/calculate`, `/helpme`, `/invite-app`, and `/invite-server` anywhere—any server, DM, or group chat—without the bot being a server member. All commands work seamlessly in both modes.
+Paws Pendragon supports Discord's User App feature. Users can add the bot to their personal account via `/invite` and use `/ttrinfo`, `/doodleinfo`, `/calculate`, `/helpme`, and `/invite` anywhere—any server, DM, or group chat—without the bot being a server member. All commands work seamlessly in both modes.
 
 ## Code patterns & important invariants
 

@@ -89,13 +89,8 @@ def _build_command_list_embed(is_admin: bool) -> discord.Embed:
         inline=False,
     )
     embed.add_field(
-        name="/invite-app",
-        value="Add Paws Pendragon TTR to your personal Discord account.",
-        inline=False,
-    )
-    embed.add_field(
-        name="/invite-server",
-        value="Add Paws Pendragon TTR to a Discord server.",
+        name="/invite",
+        value="Get links to add the bot to a server or your personal account.",
         inline=False,
     )
     embed.add_field(

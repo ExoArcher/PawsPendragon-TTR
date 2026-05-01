@@ -29,7 +29,7 @@ DM user the complete command list with descriptions. Works as a User App (no ser
 
 ## Embeds Sent
 Command list embed includes:
-- User commands: /ttrinfo, /doodleinfo, /calculate, /invite-app, /invite-server, /helpme
+- User commands: /ttrinfo, /doodleinfo, /calculate, /invite, /helpme
 - Admin commands: /pd-setup, /pd-refresh, /pd-teardown (only shown if user is admin)
 - Each command with description and usage example
 - Brief note about console commands (not user-accessible)

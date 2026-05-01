@@ -72,7 +72,7 @@ This is where the bot runs from. Contains:
 - **`Features/`** — Modular feature directory (refactoring in progress):
   - **Core/** — Core utilities: `config.py`, `db.py` (SQLite async layer), `formatters.py` (TTR JSON → Discord embeds), `ttr_api.py` (aiohttp client for TTR public endpoints).
   - **Infrastructure/** — Background systems: `live_feeds.py` (refresh loop), `user_system.py` (welcome DMs, ban enforcement), `guild_lifecycle.py` (join/leave), `announcements_maintenance.py` (maintenance mode, panel announcements), `message_sweep.py` (stale message cleanup), `github_autoupdate.py`, `state_persistence.py`.
-  - **User/** — User-facing commands: `ttrinfo.py`, `doodleinfo.py`, `calculate.py`, `helpme.py`, `invite_app.py`, `invite_server.py`, `beanfest.py`.
+  - **User/** — User-facing commands: `ttrinfo.py`, `doodleinfo.py`, `calculate.py`, `helpme.py`, `invite.py`, `beanfest.py`.
   - **Admin/** — Admin commands: `pd_setup.py`, `pd_refresh.py`, `pd_teardown.py`.
   - **ServerManagement/** — `console_commands.py` (stdin handler for hosting panel: `stop`, `restart`, `maintenance`, `announce`).
 - **`requirements.txt`** — Python dependencies (discord.py, aiohttp, python-dotenv, aiosqlite).
@@ -124,8 +124,7 @@ On first run, a one-time idempotent migration from legacy JSON files (`state.jso
 - `/ttrinfo` — DMs you current districts, invasions, field offices, Silly Meter.
 - `/doodleinfo` — DMs you all available doodles with trait ratings and buying guide.
 - `/calculate <suit> <level> <current_points>` — Shows points to next level with activity recommendations.
-- `/invite-app` — DMs you the link to add the bot to your personal Discord account.
-- `/invite-server` — DMs you the link to add the bot to a server.
+- `/invite` — DMs you the links to add the bot to your personal Discord account or a server.
 - `/helpme` — DMs you the full command list (ephemeral if DMs blocked).
 
 **Server admin commands** (require Manage Channels + Manage Messages):

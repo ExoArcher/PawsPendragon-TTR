@@ -26,8 +26,7 @@ Available in servers, DMs, and group chats. Work as both a server bot and a pers
 | `/ttrinfo` | DMs you the current district populations, cog invasions, field offices, and Silly Meter status. |
 | `/doodleinfo` | DMs you the full doodle availability list with trait ratings and a buying guide. |
 | `/calculate <suit> <level> <current_points>` | Shows how many points you still need to level up your cog suit disguise, with activity recommendations. Accepts full names or abbreviations; add `2.0` for 2.0 suits (e.g. `RB2.0`). |
-| `/invite-app` | DMs you the link to add Paws Pendragon TTR to your personal Discord account. |
-| `/invite-server` | DMs you the link to add Paws Pendragon TTR to a server. |
+| `/invite` | DMs you the links to add Paws Pendragon TTR to a server or personal account. |
 | `/helpme` | DMs you the full command list. Falls back to ephemeral if DMs are closed. |
 
 ### Server admin commands
@@ -54,9 +53,9 @@ Typed directly into the Cybrancee hosting panel console (stdin).
 
 ## User App install
 
-Paws Pendragon TTR supports Discord's **User App** feature. Users can add the bot directly to their Discord account and use `/ttrinfo`, `/doodleinfo`, `/invite-app`, `/invite-server`, and `/helpme` anywhere — in any server, DM, or group chat — without the bot needing to be a member of that server.
+Paws Pendragon TTR supports Discord's **User App** feature. Users can add the bot directly to their Discord account and use `/ttrinfo`, `/doodleinfo`, `/invite`, and `/helpme` anywhere — in any server, DM, or group chat — without the bot needing to be a member of that server.
 
-Use `/invite-app` for the personal install link, or `/invite-server` to add it to a server.
+Use `/invite` to get the install links for personal accounts and servers.
 
 ---
 
@@ -136,7 +135,7 @@ For full setup instructions see **`DEPLOY.md`**.
 - Discord 503 transient error handling: `_ensure_messages` and `_update_feed` now catch `discord.HTTPException` to survive brief API outages.
 
 **V1.1**
-- User App install support (`/ttrinfo`, `/doodleinfo`, `/helpme`, `/invite-app`, `/invite-server` work outside servers).
+- User App install support (`/ttrinfo`, `/doodleinfo`, `/helpme`, `/invite` work outside servers).
 - Silly Meter embed in `#tt-information` with team descriptions, accumulated points, and percentage display.
 - Ban system with persistent `banned_users.json` records.
 - Maintenance embed broadcast on shutdown; auto-deleted on next startup.

@@ -136,39 +136,6 @@ This document breaks down the 1454-line monolithic `bot.py` into 17+ modular fea
 
 ---
 
-## Feature 5: invite-app Command
-
-**Purpose**: User slash command that DMs the user a link to add the bot to their personal Discord account (User App feature).
-
-**Code Sections to Extract**:
-- Lines 1345-1370 (slash command registration and handler)
-
-**TTR Domain Knowledge Required**:
-- None
-
-**Discord API Calls**:
-- `app_commands.command()`
-- `await ctx.user.send()`
-
-**Database Tables Used**:
-- `welcomed_users` (via _maybe_welcome)
-
-**Performance Constraints**:
-- None
-
-**Dependencies**:
-- User system feature (welcome DM)
-
----
-
-## Feature 6: invite-server Command
-
-**Purpose**: User slash command that DMs the user a link to add the bot to a Discord server.
-
-**Code Sections to Extract**:
-- Lines 1371-1390 (slash command registration and handler)
-
-**TTR Domain Knowledge Required**:
 - None
 
 **Discord API Calls**:
@@ -594,8 +561,8 @@ This document breaks down the 1454-line monolithic `bot.py` into 17+ modular fea
 | 2. doodleinfo | 11 (live-feeds), formatters, 18 (user system) |
 | 3. calculate | 12 (state-persist), 18 (user system), formatters |
 | 4. helpme | 18 (user system) |
-| 5. invite-app | 18 (user system) |
-| 6. invite-server | 18 (user system) |
+| 5. invite | 18 (user system) |
+| 6. (merged) | 18 (user system) |
 | 7. beanfest | 18 (user system), possibly 11 (live-feeds) |
 | 8. pd-setup | 15 (guild-lifecycle), 12 (state-persist) |
 | 9. pd-teardown | 12 (state-persist) |
