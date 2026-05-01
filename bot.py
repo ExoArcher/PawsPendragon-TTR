@@ -808,6 +808,13 @@ class TTRBot(discord.AutoShardedClient):
                     keep.add(int(record.get("message_id", 0)))
                 except (TypeError, ValueError):
                     pass
+        q_record = self._get_quarantine(guild_id)
+        if q_record:
+            for mid in q_record.get("quarantine_msg_ids", {}).values():
+                try:
+                    keep.add(int(mid))
+                except (TypeError, ValueError):
+                    pass
         return keep
 
     async def _sweep_channel_stale(
@@ -1104,28 +1111,63 @@ class TTRBot(discord.AutoShardedClient):
         """Return the ban record if the user is banned, else None."""
         return self._load_banned().get(str(user_id))
 
-    async def _reject_if_banned(self, interaction: discord.Interaction) -> bool:
-        """Send an ephemeral rejection and return True if the user is banned."""
+    async def _reject_if_blocked(self, interaction: discord.Interaction) -> bool:
+        """Return True and send an ephemeral reply if the user is banned. Also handles dm_count throttling."""
         record = self._is_banned(interaction.user.id)
         if record is None:
             return False
-        reason    = record.get("reason") or "No reason given."
-        banned_at = record.get("banned_at", "unknown date")
-        msg = (
-            ":no_entry: **You have been banned from using Paws Pendragon TTR.**\n\n"
-            f"**Reason:** {reason}\n"
-            f"**Date:** {banned_at}\n\n"
-            "If you believe this is a mistake, contact the bot owner."
-        )
+
+        dm_count = record.get("dm_count", 0)
+        user_id = interaction.user.id
+
+        if dm_count >= 25:
+            msg = "You have been banned from using Paws Pendragon."
+            try:
+                await interaction.response.send_message(msg, ephemeral=True)
+            except discord.InteractionResponded:
+                await interaction.followup.send(msg, ephemeral=True)
+            log.info("Blocked banned user %s (id=%s) [dm_count=%d cap]", interaction.user, user_id, dm_count)
+            return True
+
+        ephemeral_msg = "Pendragon is unavailable, please check your DMs for more info."
         try:
-            await interaction.response.send_message(msg, ephemeral=True)
+            await interaction.response.send_message(ephemeral_msg, ephemeral=True)
         except discord.InteractionResponded:
-            await interaction.followup.send(msg, ephemeral=True)
-        log.info(
-            "Blocked banned user %s (id=%s) from %s",
-            interaction.user, interaction.user.id,
-            interaction.command and interaction.command.name,
-        )
+            await interaction.followup.send(ephemeral_msg, ephemeral=True)
+
+        dm_embeds = [
+            discord.Embed(description=(
+                "Unfortunately you have been recognized for your abuse of Pendragon's "
+                "commands in a nature that makes the usage for others less reliable."
+            ), color=0xFF4444),
+            discord.Embed(description=(
+                "In the event that you try to use the Discord-App version, or any "
+                "server's Guild version your inputs will be rejected."
+            ), color=0xFF4444),
+            discord.Embed(description=(
+                "Servers that you have management access to will also lose the ability "
+                "to use Pendragon to safeguard other toons."
+            ), color=0xFF4444),
+            discord.Embed(description=(
+                "Appeal services are unavailable at this time, if you were on this list "
+                "you were added for a reason."
+            ), color=0xFF4444),
+        ]
+        try:
+            for embed in dm_embeds:
+                await interaction.user.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        banned = self._load_banned()
+        if str(user_id) in banned:
+            banned[str(user_id)]["dm_count"] = dm_count + 1
+            self._save_banned(banned)
+
+        log.info("Blocked banned user %s (id=%s) from %s [dm_count now %d]",
+                 interaction.user, user_id,
+                 interaction.command and interaction.command.name,
+                 dm_count + 1)
         return True
 
     def _sync_env(self) -> None:
@@ -1143,6 +1185,7 @@ class TTRBot(discord.AutoShardedClient):
             "banned_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
             "banned_by": banned_by,
             "banned_by_id": banned_by_id,
+            "dm_count": 0,
         }
         self._save_banned(banned)
         self._sync_env()
@@ -1196,13 +1239,9 @@ class TTRBot(discord.AutoShardedClient):
         embed = discord.Embed(
             title="⚠️ Server Quarantine Active",
             description=(
-                "A user restricted from using Paws Pendragon TTR currently holds "
-                "moderation permissions in this server. Live feed updates have been "
-                "suspended until the issue is resolved.\n\n"
-                "**Action required:** A server administrator must remove the restricted "
-                "user's moderation roles or ban them from this server.\n\n"
-                "Contact **ExoArcher** (Discord user ID `310233741354336257`) if you "
-                "believe this is an error."
+                "This server is currently outside the realm of Pendragon's reach, "
+                "your server administrator needs to fix something before I can "
+                "continue guarding this server."
             ),
             color=0xFF4444,
         )
@@ -1221,14 +1260,43 @@ class TTRBot(discord.AutoShardedClient):
                             guild_id, feed_key, exc)
         guild_obj = self.get_guild(guild_id)
         guild_name = guild_obj.name if guild_obj else str(guild_id)
+        now = time.time()
         self._quarantined_guilds()[str(guild_id)] = {
             "triggered_by_user_id": triggered_by_user_id,
-            "triggered_at": time.time(),
+            "triggered_at": now,
             "manual": manual,
             "quarantine_msg_ids": quarantine_msg_ids,
+            "owner_last_dm_at": now,
+            "owner_dm_count": 1,
         }
         await self._save_state()
         self._sync_env()
+        if guild_obj and guild_obj.owner_id:
+            try:
+                owner = await self.fetch_user(guild_obj.owner_id)
+                bot_id = self.user.id if self.user else ""
+                owner_embed1 = discord.Embed(description=(
+                    f"Hello, I'm **Paws Pendragon** (`{bot_id}`).\n\n"
+                    f"Your server **{guild_name}** has been placed under quarantine. "
+                    f"A banned user (Discord ID: `{triggered_by_user_id}`) was detected "
+                    "holding elevated permissions in your server."
+                ), color=0xFF4444)
+                owner_embed2 = discord.Embed(description=(
+                    "To restore bot services, please remove the following permissions from "
+                    f"user `{triggered_by_user_id}` (or remove them from your server entirely):\n\n"
+                    "> `Manage Messages`  `Manage Threads`  `Manage Channels`"
+                ), color=0xFF4444)
+                owner_embed3 = discord.Embed(description=(
+                    "Paws Pendragon scans your server periodically for permission changes. "
+                    "Once the issue is resolved, bot operations will resume automatically.\n\n"
+                    "You will receive reminder messages if the issue persists. "
+                    "If unresolved after 7 days, Pendragon will leave your server."
+                ), color=0xFF4444)
+                await owner.send(embed=owner_embed1)
+                await owner.send(embed=owner_embed2)
+                await owner.send(embed=owner_embed3)
+            except Exception:
+                pass
         admin_embed = discord.Embed(
             title="⚠️ Guild Quarantined",
             description=(
@@ -1309,6 +1377,60 @@ class TTRBot(discord.AutoShardedClient):
                 newly_lifted += 1
             if result is None:
                 self._last_quarantine_scan[str(guild_id)] = now
+
+            # Escalation checks for guilds that remain quarantined
+            if self._is_quarantined(guild_id):
+                q = self._get_quarantine(guild_id)
+                triggered_at = q.get("triggered_at", now)
+                owner_dm_count = q.get("owner_dm_count", 1)
+                days_elapsed = (now - triggered_at) / 86400
+
+                if days_elapsed >= 7:
+                    guild_obj = self.get_guild(guild_id)
+                    guild_name = guild_obj.name if guild_obj else str(guild_id)
+                    log.warning("[quarantine] Day 7 limit reached for guild %s (%s) — leaving", guild_id, guild_name)
+                    try:
+                        if guild_obj:
+                            await guild_obj.leave()
+                    except Exception:
+                        pass
+                    del self._quarantined_guilds()[str(guild_id)]
+                    await self._save_state()
+                    self._sync_env()
+                    continue
+
+                needed_count = 1
+                if days_elapsed >= 3:
+                    needed_count = 2
+                if days_elapsed >= 6:
+                    needed_count = 3
+
+                if owner_dm_count < needed_count:
+                    guild_obj = self.get_guild(guild_id)
+                    guild_name = guild_obj.name if guild_obj else str(guild_id)
+                    triggered_by = q.get("triggered_by_user_id", "unknown")
+                    day_label = 3 if needed_count == 2 else 6
+                    try:
+                        if guild_obj and guild_obj.owner_id:
+                            owner = await self.fetch_user(guild_obj.owner_id)
+                            reminder_embed = discord.Embed(
+                                title="⚠️ Quarantine Reminder",
+                                description=(
+                                    f"**{guild_name}** has been quarantined for {day_label} day(s).\n\n"
+                                    f"User `{triggered_by}` still holds elevated permissions. "
+                                    f"Please remove `Manage Messages`, `Manage Threads`, or `Manage Channels` "
+                                    f"from this user, or remove them from the server.\n\n"
+                                    f"Pendragon will leave your server in {7 - day_label} day(s) if unresolved."
+                                ),
+                                color=0xFF8800,
+                            )
+                            await owner.send(embed=reminder_embed)
+                    except Exception:
+                        pass
+                    q["owner_dm_count"] = needed_count
+                    q["owner_last_dm_at"] = now
+                    await self._save_state()
+
         return {"scanned": scanned, "quarantined": newly_quarantined, "lifted": newly_lifted}
 
     async def _scan_new_ban(self, user_id: int) -> None:
@@ -1354,7 +1476,7 @@ class TTRBot(discord.AutoShardedClient):
         @app_commands.allowed_installs(guilds=True, users=True)
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def ttrinfo(interaction: discord.Interaction) -> None:
-            if await self._reject_if_banned(interaction):
+            if await self._reject_if_blocked(interaction):
                 return
             await interaction.response.defer(ephemeral=True, thinking=True)
             await self._maybe_welcome(interaction.user)
@@ -1394,7 +1516,7 @@ class TTRBot(discord.AutoShardedClient):
         @app_commands.allowed_installs(guilds=True, users=True)
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def doodleinfo(interaction: discord.Interaction) -> None:
-            if await self._reject_if_banned(interaction):
+            if await self._reject_if_blocked(interaction):
                 return
             await interaction.response.defer(ephemeral=True, thinking=True)
             await self._maybe_welcome(interaction.user)
@@ -1420,7 +1542,7 @@ class TTRBot(discord.AutoShardedClient):
         @app_commands.allowed_installs(guilds=True, users=True)
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def help_me(interaction: discord.Interaction) -> None:
-            if await self._reject_if_banned(interaction):
+            if await self._reject_if_blocked(interaction):
                 return
             embed = discord.Embed(
                 title="Paws Pendragon TTR — Commands",
@@ -1479,7 +1601,7 @@ class TTRBot(discord.AutoShardedClient):
         @app_commands.allowed_installs(guilds=True, users=True)
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def invite_app(interaction: discord.Interaction) -> None:
-            if await self._reject_if_banned(interaction):
+            if await self._reject_if_blocked(interaction):
                 return
             link = (
                 "https://discord.com/oauth2/authorize"
@@ -1518,7 +1640,7 @@ class TTRBot(discord.AutoShardedClient):
         @app_commands.allowed_installs(guilds=True, users=True)
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def invite_server(interaction: discord.Interaction) -> None:
-            if await self._reject_if_banned(interaction):
+            if await self._reject_if_blocked(interaction):
                 return
             link = (
                 "https://discord.com/oauth2/authorize"
@@ -1560,7 +1682,7 @@ class TTRBot(discord.AutoShardedClient):
         @app_commands.allowed_installs(guilds=True, users=True)
         @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
         async def beanfest(interaction: discord.Interaction) -> None:
-            if await self._reject_if_banned(interaction):
+            if await self._reject_if_blocked(interaction):
                 return
             embed = discord.Embed(
                 title="Beanfest Schedule",
