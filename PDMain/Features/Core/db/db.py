@@ -88,10 +88,17 @@ async def load_state(path: Path = DB_PATH) -> dict[str, Any]:
             "SELECT guild_id, feed_key, channel_id, message_ids FROM guild_feeds"
         ) as cur:
             async for gid, key, ch_id, raw_ids in cur:
-                state["guilds"].setdefault(gid, {})[key] = {
-                    "channel_id": ch_id,
-                    "message_ids": json.loads(raw_ids),
-                }
+                if key.startswith("suit_threads."):
+                    faction = key[len("suit_threads."):]
+                    state["guilds"].setdefault(gid, {}).setdefault("suit_threads", {})[faction] = {
+                        "thread_id": ch_id,
+                        "message_ids": json.loads(raw_ids),
+                    }
+                else:
+                    state["guilds"].setdefault(gid, {})[key] = {
+                        "channel_id": ch_id,
+                        "message_ids": json.loads(raw_ids),
+                    }
         async with db.execute("SELECT guild_id FROM allowlist") as cur:
             state["allowlist"] = [row[0] async for row in cur]
         async with db.execute(
@@ -123,6 +130,20 @@ async def save_state(state: dict[str, Any], path: Path = DB_PATH) -> None:
         for gid, feeds in state.get("guilds", {}).items():
             for key, entry in feeds.items():
                 if not isinstance(entry, dict):
+                    continue
+                if key == "suit_threads":
+                    for faction, fdata in entry.items():
+                        if not isinstance(fdata, dict):
+                            continue
+                        await db.execute(
+                            "INSERT INTO guild_feeds (guild_id, feed_key, channel_id, message_ids) "
+                            "VALUES (?, ?, ?, ?) "
+                            "ON CONFLICT(guild_id, feed_key) DO UPDATE SET "
+                            "channel_id=excluded.channel_id, message_ids=excluded.message_ids",
+                            (gid, f"suit_threads.{faction}",
+                             int(fdata.get("thread_id", 0)),
+                             json.dumps(fdata.get("message_ids") or [])),
+                        )
                     continue
                 await db.execute(
                     "INSERT INTO guild_feeds (guild_id, feed_key, channel_id, message_ids) "

@@ -238,6 +238,20 @@ class MessageSweep:
                 except (TypeError, ValueError):
                     pass
 
+        # Protect suit-thread starter messages in #suit-calculator
+        suit_calc = guild_state.get("suit_calculator", {})
+        if isinstance(suit_calc, dict) and int(suit_calc.get("channel_id", 0)) == channel_id:
+            suit_threads = guild_state.get("suit_threads", {})
+            if isinstance(suit_threads, dict):
+                for faction_data in suit_threads.values():
+                    if isinstance(faction_data, dict):
+                        tid = faction_data.get("thread_id")
+                        if tid:
+                            try:
+                                keep.add(int(tid))
+                            except (TypeError, ValueError):
+                                pass
+
         # Also keep announcement messages in this channel
         for record in self._announcements():
             if int(record.get("channel_id", 0)) == channel_id:
