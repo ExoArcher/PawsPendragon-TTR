@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(dotenv_path="/home/container/.env")
 
 
 def _required(name: str) -> str:
