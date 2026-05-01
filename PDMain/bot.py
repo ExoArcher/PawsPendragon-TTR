@@ -57,6 +57,7 @@ import subprocess as _subprocess
 import sys as _sys
 
 _BOT_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path.insert(0, _BOT_DIR)
 _GIT_REPO = "https://github.com/ExoArcher/PawsPendragon-TTR"
 
 try:
