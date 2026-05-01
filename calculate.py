@@ -827,8 +827,9 @@ class _SuitSelect(discord.ui.Select):
                 content=f"**{suit_name}** › Normal or 2.0?", view=view
             )
         else:
-            view, content = _make_level_view(abbr, suit_name, self.faction, False, 0)
-            await interaction.response.edit_message(content=content, view=view)
+            await interaction.response.show_modal(
+                _LevelModal(abbr, suit_name, self.faction, False)
+            )
 
 
 class _VersionSelect(discord.ui.Select):
@@ -844,90 +845,67 @@ class _VersionSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         is_v2 = self.values[0] == "2"
-        view, content = _make_level_view(self.abbr, self.suit_name, self.faction, is_v2, 0)
-        await interaction.response.edit_message(content=content, view=view)
+        await interaction.response.show_modal(
+            _LevelModal(self.abbr, self.suit_name, self.faction, is_v2)
+        )
 
 
-def _make_level_view(
-    abbr: str, suit_name: str, faction: str, is_v2: bool, page: int
-) -> tuple["_CalcView", str]:
-    _, chart_key, _ = SUITS[abbr]
-    lo, hi = valid_level_range(abbr, faction, chart_key, is_v2)
-    all_levels = [
-        lv for lv in range(lo, hi + 1)
-        if get_quota(abbr, faction, chart_key, lv, is_v2) is not None
-    ]
+class _LevelModal(discord.ui.Modal, title="Choose Level"):
+    level_input = discord.ui.TextInput(
+        label="Level number",
+        placeholder="e.g. 5",
+        min_length=1,
+        max_length=2,
+    )
 
-    per_page = 23
-    start    = page * per_page
-    chunk    = all_levels[start : start + per_page]
-    has_prev = page > 0
-    has_next = start + per_page < len(all_levels)
-
-    v2_tag  = " 2.0" if is_v2 else ""
-    step    = "④" if abbr in _V2_SUITS else "③"
-    content = f"**{suit_name}{v2_tag}** › Choose your current level:"
-
-    options = []
-    for lv in chunk:
-        quota = get_quota(abbr, faction, chart_key, lv, is_v2)
-        desc  = "Maxed" if quota == 0 else f"{quota:,} pts quota"
-        options.append(discord.SelectOption(label=f"Level {lv}", description=desc, value=str(lv)))
-
-    view = _CalcView()
-    view.add_item(_LevelSelect(abbr, suit_name, faction, is_v2, step, options))
-    if has_prev:
-        view.add_item(_NavButton(abbr, suit_name, faction, is_v2, page - 1, "◀  Previous", discord.ButtonStyle.secondary))
-    if has_next:
-        view.add_item(_NavButton(abbr, suit_name, faction, is_v2, page + 1, "Next  ▶", discord.ButtonStyle.secondary))
-    return view, content
-
-
-class _LevelSelect(discord.ui.Select):
-    def __init__(
-        self, abbr: str, suit_name: str, faction: str,
-        is_v2: bool, step: str, options: list[discord.SelectOption],
-    ) -> None:
+    def __init__(self, abbr: str, suit_name: str, faction: str, is_v2: bool) -> None:
+        super().__init__()
         self.abbr      = abbr
         self.suit_name = suit_name
         self.faction   = faction
         self.is_v2     = is_v2
-        super().__init__(placeholder=f"{step} Level…", options=options)
+        _, self.chart_key, _ = SUITS[abbr]
 
-    async def callback(self, interaction: discord.Interaction) -> None:
-        level_num = int(self.values[0])
-        _, chart_key, _ = SUITS[self.abbr]
-        quota = get_quota(self.abbr, self.faction, chart_key, level_num, self.is_v2)
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            level_num = int(self.level_input.value.strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Please enter a valid level number (e.g. 5).",
+                ephemeral=True,
+            )
+            return
+
+        lo, hi = valid_level_range(self.abbr, self.faction, self.chart_key, self.is_v2)
+        if not (lo <= level_num <= hi):
+            await interaction.response.send_message(
+                f"❌ Invalid level. **{self.suit_name}** levels range from {lo} to {hi}.",
+                ephemeral=True,
+            )
+            return
+
+        quota = get_quota(self.abbr, self.faction, self.chart_key, level_num, self.is_v2)
+        if quota is None:
+            await interaction.response.send_message(
+                f"❌ Level {level_num} is not available.",
+                ephemeral=True,
+            )
+            return
+
         if quota == 0:
             v2_tag = " 2.0" if self.is_v2 else ""
-            await interaction.response.edit_message(
+            await interaction.response.send_message(
                 content=(
                     f"\U0001f43e **{self.suit_name}{v2_tag}** at level {level_num} "
-                    "is **Maxed** — nothing left to earn!"
+                    "is **Maxed** — nothing left to earn! Use **/calculate** to try another suit."
                 ),
                 view=_RestartView(),
             )
             return
+
         await interaction.response.send_modal(
             _PointsModal(self.abbr, self.suit_name, self.faction, level_num, self.is_v2, quota)
         )
-
-
-class _NavButton(discord.ui.Button):
-    def __init__(
-        self, abbr: str, suit_name: str, faction: str,
-        is_v2: bool, page: int, label: str, style: discord.ButtonStyle,
-    ) -> None:
-        super().__init__(label=label, style=style)
-        self.abbr      = abbr
-        self.suit_name = suit_name
-        self.faction   = faction
-        self.is_v2     = is_v2
-        self.page      = page
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        view, content = _make_level_view(self.abbr, self.suit_name, self.faction, self.is_v2, self.page)
-        await interaction.response.edit_message(content=content, view=view)
 
 
 class _RestartView(discord.ui.View):
