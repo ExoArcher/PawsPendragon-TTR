@@ -288,7 +288,7 @@ class TTRBot(discord.AutoShardedClient):
 
         await cache_manager.load_caches_from_db()
         print("[Cache Manager] Loaded successfully", flush=True)
-        await periodic_checks.start_periodic_checks()
+        await periodic_checks.start_periodic_checks(self)
         print("[Periodic Checks] Loaded successfully", flush=True)
 
         if not self._refresh_loop.is_running():
