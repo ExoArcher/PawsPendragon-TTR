@@ -134,6 +134,7 @@ from Features.Infrastructure.live_feeds.live_feeds import LiveFeedsFeature
 from Features.Infrastructure.guild_lifecycle.guild_lifecycle import GuildLifecycleManager
 from Features.ServerManagement.console_commands.console_commands import run_console, clear_maintenance_on_startup
 from Features.User.calculate.calculate import register_calculate, build_suit_calculator_embeds, build_faction_thread_embeds
+from Features.User.doodlesearch.doodlesearch import register_doodlesearch
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -1341,6 +1342,9 @@ class TTRBot(LiveFeedsFeature, discord.AutoShardedClient):
 
         # ── /calculate  (all users, guild + user install) ──────────────────
         register_calculate(self)
+        
+        # ── /doodlesearch (all users) ──────────────────────────────────────
+        register_doodlesearch(self)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
