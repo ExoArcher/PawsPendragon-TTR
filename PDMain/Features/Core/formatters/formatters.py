@@ -267,7 +267,7 @@ STAR_BAD     = os.getenv("STAR_BAD",     "<:Trash:1497379832865226844>")
 
 # Used for Kaboomberg's "Annexes Remaining" placeholder and anywhere else
 # we want to render an infinity glyph. Override in .env for a custom emoji.
-INFINITE_EMOJI = os.getenv("INFINITE_EMOJI", "♾️")
+INFINITE_EMOJI = os.getenv("INFINITE_EMOJI", "<:Infinite:1497383349046607882>")
 
 _TIER_STARS = {
     "perfect": STAR_PERFECT,

@@ -91,6 +91,28 @@ class Config:
     channel_suit_calculator: str
     banned_user_ids: frozenset[int]
     quarantined_guild_ids: frozenset[int]
+    # ── Custom emojis ──────────────────────────────────────────────────────────
+    jellybean_emoji: str
+    cog_emoji: str
+    safe_emoji: str
+    infinite_emoji: str
+    pendragon_emoji: str
+    purple_blue_circle_emoji: str
+    purple_gld_diamond_emoji: str
+    purple_r_diamond_emoji: str
+    lav_emoji: str
+    tu_emoji: str
+    trap_emoji: str
+    lure_emoji: str
+    sound_emoji: str
+    throw_emoji: str
+    # ── Doodle star emojis ─────────────────────────────────────────────────────
+    star_perfect: str
+    star_amazing: str
+    star_great: str
+    star_good: str
+    star_ok: str
+    star_bad: str
 
     @classmethod
     def load(cls) -> "Config":
@@ -102,17 +124,18 @@ class Config:
         - BOT_ADMIN_IDS: Comma/space-separated user IDs for console commands (optional, defaults to ExoArcher)
 
         Optional env vars with sensible defaults:
-        - REFRESH_INTERVAL (default: 90) - seconds between live feed refreshes
-        - USER_AGENT (default: "ttr-discord-bot (https://github.com/)") - descriptive string for TTR API
-        - CHANNEL_CATEGORY (default: "Toontown Rewritten") - category name for channels
-        - CHANNEL_INFORMATION (default: "tt-information") - channel for live feeds
+        - REFRESH_INTERVAL (default: 120) - seconds between live feed refreshes
+        - USER_AGENT (default: "Paws Pendragon-DiscBot") - descriptive string for TTR API
+        - CHANNEL_CATEGORY (default: "PendragonTTR") - category name for channels
+        - CHANNEL_INFORMATION (default: "tt-info") - channel for live feeds
         - CHANNEL_DOODLES (default: "tt-doodles") - channel for doodle info
-        - CHANNEL_SUIT_CALCULATOR (default: "suit-calculator") - channel for suit calculator
+        - CHANNEL_SUIT_CALCULATOR (default: "suit-calc") - channel for suit calculator
         - BANNED_USER_IDS (optional) - user IDs to ban from bot
         - QUARANTINED_GUILD_IDS (optional) - guilds to quarantine
-        - JELLYBEAN_EMOJI (optional) - custom emoji ID for jellybeans
-        - COG_EMOJI (optional) - custom emoji ID for cogs
-        - STAR_* (optional) - custom emoji IDs for stars
+        - JELLYBEAN_EMOJI, COG_EMOJI, SAFE_EMOJI, INFINITE_EMOJI - general emojis
+        - PENDRAGON_EMOJI, PurpleBlueCircle_EMOJI, PurpleGldDiamond_EMOJI, PurpleRDiamond_EMOJI - decoration emojis
+        - LAV_Emoji, TU_EMOJI, TRAP_EMOJI, LURE_EMOJI, SOUND_EMOJI, THROW_EMOJI - gag track emojis
+        - STAR_PERFECT, STAR_AMAZING, STAR_GREAT, STAR_GOOD, STAR_OK, STAR_BAD - doodle tier stars
         """
         return cls(
             token=_required("DISCORD_TOKEN"),
@@ -123,17 +146,17 @@ class Config:
                 os.getenv("BOT_ADMIN_IDS") or "310233741354336257",
                 var_name="BOT_ADMIN_IDS",
             ),
-            refresh_interval=_int_env("REFRESH_INTERVAL", default=90),
+            refresh_interval=_int_env("REFRESH_INTERVAL", default=120),
             user_agent=os.getenv(
-                "USER_AGENT", "ttr-discord-bot (https://github.com/)"
+                "USER_AGENT", "Paws Pendragon-DiscBot"
             ),
-            category_name=os.getenv("CHANNEL_CATEGORY", "Toontown Rewritten"),
+            category_name=os.getenv("CHANNEL_CATEGORY", "PendragonTTR"),
             channel_information=os.getenv(
-                "CHANNEL_INFORMATION", "tt-information"
+                "CHANNEL_INFORMATION", "tt-info"
             ),
             channel_doodles=os.getenv("CHANNEL_DOODLES", "tt-doodles"),
             channel_suit_calculator=os.getenv(
-                "CHANNEL_SUIT_CALCULATOR", "suit-calculator"
+                "CHANNEL_SUIT_CALCULATOR", "suit-calc"
             ),
             banned_user_ids=_parse_id_list(
                 os.getenv("BANNED_USER_IDS"), var_name="BANNED_USER_IDS"
@@ -141,6 +164,28 @@ class Config:
             quarantined_guild_ids=_parse_id_list(
                 os.getenv("QUARANTINED_GUILD_IDS"), var_name="QUARANTINED_GUILD_IDS"
             ),
+            # ── General emojis ────────────────────────────────────────────────
+            jellybean_emoji=os.getenv("JELLYBEAN_EMOJI", "<:Jellybeans:1496983830106603551>"),
+            cog_emoji=os.getenv("COG_EMOJI", "<:Cog:1496996533432877078>"),
+            safe_emoji=os.getenv("SAFE_EMOJI", "<:Safe:1497311481711165625>"),
+            infinite_emoji=os.getenv("INFINITE_EMOJI", "<:Infinite:1497383349046607882>"),
+            pendragon_emoji=os.getenv("PENDRAGON_EMOJI", "<:Pendragon:1499923320613896282>"),
+            purple_blue_circle_emoji=os.getenv("PurpleBlueCircle_EMOJI", "<:PurpleBlueCircle:1499922543396519956>"),
+            purple_gld_diamond_emoji=os.getenv("PurpleGldDiamond_EMOJI", "<:PurpleGldDiamond:1499922496231571657>"),
+            purple_r_diamond_emoji=os.getenv("PurpleRDiamond_EMOJI", "<:PurpleRDiamond:1499921992906706988>"),
+            lav_emoji=os.getenv("LAV_Emoji", "<:Lav:1499503216084390019>"),
+            tu_emoji=os.getenv("TU_EMOJI", "<:ToonUp:1499440893479092284>"),
+            trap_emoji=os.getenv("TRAP_EMOJI", "<:Trap:1499440908884643942>"),
+            lure_emoji=os.getenv("LURE_EMOJI", "<:Lure:1499440906170925066>"),
+            sound_emoji=os.getenv("SOUND_EMOJI", "<:Sound:1499440907903176724>"),
+            throw_emoji=os.getenv("THROW_EMOJI", "<:Throw:1499440890945474744>"),
+            # ── Doodle star emojis ────────────────────────────────────────────
+            star_perfect=os.getenv("STAR_PERFECT", "<:RBStar:1497375968619135076>"),
+            star_amazing=os.getenv("STAR_AMAZING", "<:RBStar:1497375968619135076>"),
+            star_great=os.getenv("STAR_GREAT", "<:GoldenStar:1497383695781462016>"),
+            star_good=os.getenv("STAR_GOOD", "<:SilverStar:1497299363590967549>"),
+            star_ok=os.getenv("STAR_OK", "<:BronzeStar:1497300707554889891>"),
+            star_bad=os.getenv("STAR_BAD", "<:Trash:1497379832865226844>"),
         )
 
     def feeds(self) -> dict[str, str]:
@@ -151,8 +196,8 @@ class Config:
             - "information": channel for live information feeds
             - "doodles": channel for doodle info
 
-        Note: #suit-calculator is NOT included here — it is static and
-        updated only on startup and /pd-refresh, not on the 90-second loop.
+        Note: #suit-calc is NOT included here — it is static and
+        updated only on startup and /pdrefresh, not on the refresh loop.
         """
         return {
             "information": self.channel_information,
