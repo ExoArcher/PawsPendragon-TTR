@@ -57,6 +57,32 @@ CREATE TABLE IF NOT EXISTS maintenance_mode (
     message_id  INTEGER NOT NULL,
     PRIMARY KEY (guild_id, feed_key)
 );
+CREATE TABLE IF NOT EXISTS quarantined_guilds (
+    guild_id              TEXT    PRIMARY KEY,
+    guild_name            TEXT,
+    owner_id              TEXT,
+    flagged_at            TEXT,
+    flag_reason           TEXT,
+    flagged_by_user_id    TEXT,
+    noticed               TIMESTAMP,
+    feeds_halted          TIMESTAMP,
+    owner_notified        CHAR(1) DEFAULT 'N'
+);
+CREATE TABLE IF NOT EXISTS blacklist (
+    guild_id              INTEGER PRIMARY KEY,
+    owner_id              INTEGER,
+    reason                TEXT,
+    timestamp             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    flagged_by_user_ids   TEXT
+);
+CREATE TABLE IF NOT EXISTS audit_log (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id              INTEGER,
+    event_type            TEXT,
+    details               TEXT,
+    timestamp             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    triggered_by_user_id  INTEGER
+);
 """
 
 
@@ -218,6 +244,40 @@ async def get_ban(user_id: int, path: Path = DB_PATH) -> dict | None:
     }
 
 
+async def load_all_banned(path: Path = DB_PATH) -> dict[str, dict]:
+    """Load ALL banned users from the database into a dict keyed by user_id str."""
+    result: dict[str, dict] = {}
+    async with aiosqlite.connect(path) as db:
+        async with db.execute(
+            "SELECT user_id, reason, banned_at, banned_by, banned_by_id FROM banned_users"
+        ) as cur:
+            async for row in cur:
+                result[row[0]] = {
+                    "reason": row[1], "banned_at": row[2],
+                    "banned_by": row[3], "banned_by_id": row[4],
+                }
+    return result
+
+
+async def add_ban(user_id: int, reason: str, banned_at: str, path: Path = DB_PATH) -> None:
+    """Insert or replace a single ban record."""
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO banned_users "
+            "(user_id, reason, banned_at, banned_by, banned_by_id) VALUES (?, ?, ?, ?, ?)",
+            (str(user_id), reason, banned_at, "console", None),
+        )
+        await db.commit()
+
+
+async def remove_ban(user_id: int, path: Path = DB_PATH) -> bool:
+    """Remove a ban record. Returns True if a row was deleted."""
+    async with aiosqlite.connect(path) as db:
+        cur = await db.execute("DELETE FROM banned_users WHERE user_id = ?", (str(user_id),))
+        await db.commit()
+        return cur.rowcount > 0
+
+
 async def save_banned(banned: dict[str, dict], path: Path = DB_PATH) -> None:
     async with aiosqlite.connect(path) as db:
         await db.execute("DELETE FROM banned_users")
@@ -232,6 +292,51 @@ async def save_banned(banned: dict[str, dict], path: Path = DB_PATH) -> None:
                 ),
             )
         await db.commit()
+
+
+# ── Quarantined guilds ─────────────────────────────────────────────────────────
+
+async def load_quarantined_guilds(path: Path = DB_PATH) -> dict[str, dict]:
+    """Load all quarantined guilds from the database."""
+    result: dict[str, dict] = {}
+    async with aiosqlite.connect(path) as db:
+        async with db.execute(
+            "SELECT guild_id, guild_name, owner_id, flagged_at, flag_reason, flagged_by_user_id "
+            "FROM quarantined_guilds"
+        ) as cur:
+            async for row in cur:
+                result[row[0]] = {
+                    "guild_id": row[0], "guild_name": row[1],
+                    "owner_id": row[2], "flagged_at": row[3],
+                    "flag_reason": row[4], "flagged_by_user_id": row[5],
+                }
+    return result
+
+
+async def add_quarantined_guild(
+    guild_id: str, guild_name: str, owner_id: str,
+    flagged_at: str, flag_reason: str, flagged_by_user_id: str,
+    path: Path = DB_PATH,
+) -> None:
+    """Insert or replace a quarantined guild record."""
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO quarantined_guilds "
+            "(guild_id, guild_name, owner_id, flagged_at, flag_reason, flagged_by_user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (str(guild_id), guild_name, str(owner_id), flagged_at, flag_reason, str(flagged_by_user_id)),
+        )
+        await db.commit()
+
+
+async def remove_quarantined_guild(guild_id: str, path: Path = DB_PATH) -> bool:
+    """Remove a quarantined guild record. Returns True if a row was deleted."""
+    async with aiosqlite.connect(path) as db:
+        cur = await db.execute(
+            "DELETE FROM quarantined_guilds WHERE guild_id = ?", (str(guild_id),)
+        )
+        await db.commit()
+        return cur.rowcount > 0
 
 
 # ── Maintenance mode ───────────────────────────────────────────────────────────
@@ -258,6 +363,76 @@ async def save_maint_mode(data: dict, path: Path = DB_PATH) -> None:
                     (str(gid), str(fk), int(mid)),
                 )
         await db.commit()
+
+
+# ── Audit log operations ──────────────────────────────────────────────────────
+
+async def log_audit_event(
+    event_type: str,
+    details: dict | None = None,
+    guild_id: int | None = None,
+    triggered_by_user_id: int | None = None,
+    path: Path = DB_PATH,
+) -> None:
+    """Log an event to the audit_log table.
+
+    Args:
+        event_type: Type of event (e.g., 'banned_user_added', 'allowed_guild_added').
+        details: JSON-serializable dict of event details.
+        guild_id: Optional guild ID associated with the event.
+        triggered_by_user_id: Optional user ID who triggered the event.
+        path: Path to the database file.
+    """
+    import json as json_module
+
+    details_json = json_module.dumps(details) if details else None
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "INSERT INTO audit_log (event_type, details, guild_id, triggered_by_user_id) "
+            "VALUES (?, ?, ?, ?)",
+            (event_type, details_json, guild_id, triggered_by_user_id),
+        )
+        await db.commit()
+
+
+# ── Allowlist operations ──────────────────────────────────────────────────────
+
+async def add_guild_to_allowlist(guild_id: int, path: Path = DB_PATH) -> None:
+    """Add a guild to the allowlist. Safe to call if already in allowlist."""
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO allowlist (guild_id) VALUES (?)",
+            (int(guild_id),),
+        )
+        await db.commit()
+
+
+async def remove_guild_from_allowlist(guild_id: int, path: Path = DB_PATH) -> bool:
+    """Remove a guild from the allowlist. Returns True if a row was deleted."""
+    async with aiosqlite.connect(path) as db:
+        cur = await db.execute("DELETE FROM allowlist WHERE guild_id = ?", (int(guild_id),))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def load_allowlist(path: Path = DB_PATH) -> list[int]:
+    """Load all guild IDs from the allowlist."""
+    result: list[int] = []
+    async with aiosqlite.connect(path) as db:
+        async with db.execute("SELECT guild_id FROM allowlist") as cur:
+            async for row in cur:
+                result.append(int(row[0]))
+    return result
+
+
+# ── Guild feeds operations ────────────────────────────────────────────────────
+
+async def delete_guild_feeds(guild_id: int, path: Path = DB_PATH) -> bool:
+    """Delete all feed entries for a guild. Returns True if any rows were deleted."""
+    async with aiosqlite.connect(path) as db:
+        cur = await db.execute("DELETE FROM guild_feeds WHERE guild_id = ?", (str(guild_id),))
+        await db.commit()
+        return cur.rowcount > 0
 
 
 # ── One-time JSON → SQLite migration ──────────────────────────────────────────
@@ -348,3 +523,137 @@ async def migrate_from_json(bot_dir: Path, path: Path = DB_PATH) -> None:
         await db.commit()
 
     log.info("[db] JSON → SQLite migration complete.")
+
+
+# ── Blacklist operations ───────────────────────────────────────────────────────
+
+async def add_to_blacklist(
+    guild_id: int, owner_id: int, reason: str, flagged_by_user_id: int,
+    path: Path = DB_PATH,
+) -> None:
+    """Add a guild to the blacklist. Stores comma-separated flagged user IDs."""
+    async with aiosqlite.connect(path) as db:
+        # Try to get existing flagged_by_user_ids
+        async with db.execute(
+            "SELECT flagged_by_user_ids FROM blacklist WHERE guild_id = ?", (guild_id,)
+        ) as cur:
+            row = await cur.fetchone()
+
+        existing_ids = row[0] if row else ""
+        if existing_ids:
+            ids_list = existing_ids.split(",")
+            if str(flagged_by_user_id) not in ids_list:
+                ids_list.append(str(flagged_by_user_id))
+            flagged_by_user_ids = ",".join(ids_list)
+        else:
+            flagged_by_user_ids = str(flagged_by_user_id)
+
+        await db.execute(
+            "INSERT OR REPLACE INTO blacklist "
+            "(guild_id, owner_id, reason, flagged_by_user_ids) VALUES (?, ?, ?, ?)",
+            (guild_id, owner_id, reason, flagged_by_user_ids),
+        )
+        await db.commit()
+
+
+async def remove_from_blacklist(guild_id: int, path: Path = DB_PATH) -> bool:
+    """Remove a guild from the blacklist. Returns True if a row was deleted."""
+    async with aiosqlite.connect(path) as db:
+        cur = await db.execute("DELETE FROM blacklist WHERE guild_id = ?", (guild_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def get_all_blacklisted(path: Path = DB_PATH) -> list[int]:
+    """Return a list of all blacklisted guild IDs."""
+    result: list[int] = []
+    async with aiosqlite.connect(path) as db:
+        async with db.execute("SELECT guild_id FROM blacklist") as cur:
+            async for row in cur:
+                result.append(row[0])
+    return result
+
+
+# ── Quarantine operations ───────────────────────────────────────────────────────
+
+async def add_quarantined_guild_console(
+    guild_id: int, owner_id: int, flagged_by_user_id: int,
+    noticed: str | None = None, feeds_halted: str | None = None,
+    owner_notified: str = "N",
+    path: Path = DB_PATH,
+) -> None:
+    """Insert or update a quarantined guild using the console update system schema.
+
+    This function is used by Phase 1 of the console update system.
+    It updates the noticed, feeds_halted, and owner_notified fields while
+    preserving existing guild_name, flagged_at, and flag_reason fields.
+    """
+    async with aiosqlite.connect(path) as db:
+        # First check if the guild already exists
+        async with db.execute(
+            "SELECT guild_name, flagged_at, flag_reason FROM quarantined_guilds WHERE guild_id = ?",
+            (str(guild_id),)
+        ) as cur:
+            row = await cur.fetchone()
+
+        guild_name = row[0] if row else ""
+        flagged_at = row[1] if row else ""
+        flag_reason = row[2] if row else ""
+
+        # Insert or replace, preserving existing metadata
+        await db.execute(
+            "INSERT OR REPLACE INTO quarantined_guilds "
+            "(guild_id, owner_id, flagged_by_user_id, guild_name, flagged_at, flag_reason, noticed, feeds_halted, owner_notified) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(guild_id), str(owner_id), str(flagged_by_user_id), guild_name, flagged_at, flag_reason, noticed, feeds_halted, owner_notified),
+        )
+        await db.commit()
+
+
+async def remove_quarantine(guild_id: int, path: Path = DB_PATH) -> bool:
+    """Remove a guild from quarantine."""
+    async with aiosqlite.connect(path) as db:
+        cur = await db.execute(
+            "DELETE FROM quarantined_guilds WHERE guild_id = ?", (str(guild_id),)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def get_all_quarantined(path: Path = DB_PATH) -> list[int]:
+    """Return a list of all quarantined guild IDs as integers."""
+    result: list[int] = []
+    async with aiosqlite.connect(path) as db:
+        async with db.execute("SELECT DISTINCT guild_id FROM quarantined_guilds WHERE guild_id IS NOT NULL") as cur:
+            async for row in cur:
+                try:
+                    result.append(int(row[0]))
+                except (ValueError, TypeError):
+                    pass
+    return result
+
+
+# ── Audit log operations ───────────────────────────────────────────────────────
+
+async def audit_log_event(
+    guild_id: int, event_type: str, details: str, triggered_by_user_id: int,
+    path: Path = DB_PATH,
+) -> None:
+    """Log an audit event to the audit_log table."""
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "INSERT INTO audit_log (guild_id, event_type, details, triggered_by_user_id) "
+            "VALUES (?, ?, ?, ?)",
+            (guild_id, event_type, details, triggered_by_user_id),
+        )
+        await db.commit()
+
+
+# ── Banned users utility ────────────────────────────────────────────────────────
+
+async def count_banned_users_with_dangerous_perms(path: Path = DB_PATH) -> int:
+    """Count how many banned users are registered in the database."""
+    async with aiosqlite.connect(path) as db:
+        async with db.execute("SELECT COUNT(*) FROM banned_users") as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0

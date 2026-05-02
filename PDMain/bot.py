@@ -103,6 +103,7 @@ from Features.Core.db import db
 from Features.Core.config.config import Config
 from Features.Core.formatters.formatters import FORMATTERS, format_doodles, format_information, format_sillymeter
 from Features.Core.ttr_api.ttr_api import TTRApiClient
+from Features.Infrastructure import cache_manager, periodic_checks
 from Features.ServerManagement.console_commands.console_commands import run_console, clear_maintenance_on_startup
 from Features.User.calculate.calculate import register_calculate, build_suit_calculator_embeds, build_faction_thread_embeds
 
@@ -284,6 +285,11 @@ class TTRBot(discord.AutoShardedClient):
         await self._refresh_suit_calculator_all_guilds()
         print("[Suit Calculator] Loaded successfully", flush=True)
         await self._save_state()
+
+        await cache_manager.load_caches_from_db()
+        print("[Cache Manager] Loaded successfully", flush=True)
+        await periodic_checks.start_periodic_checks()
+        print("[Periodic Checks] Loaded successfully", flush=True)
 
         if not self._refresh_loop.is_running():
             self._refresh_loop.change_interval(seconds=self.config.refresh_interval)
@@ -727,6 +733,9 @@ class TTRBot(discord.AutoShardedClient):
                 except ValueError:
                     continue
                 if not self.is_guild_allowed(guild_id) or self.get_guild(guild_id) is None:
+                    continue
+                # Skip quarantined guilds (do not call _update_feed for those)
+                if guild_id in cache_manager.QuarantinedServerid:
                     continue
                 for feed_key in self.config.feeds():
                     # Skip doodle embeds unless the 12-hour interval has elapsed

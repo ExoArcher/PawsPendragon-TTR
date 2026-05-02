@@ -136,6 +136,31 @@ This document breaks down the 1454-line monolithic `bot.py` into 17+ modular fea
 
 ---
 
+## Feature 5: invite Command
+
+**Purpose**: User slash command that DMs the user a link to add the bot to their personal Discord account (User App feature) or to a Discord server.
+
+**Code Sections to Extract**:
+- Lines 1345-1370 (slash command registration and handler)
+
+**TTR Domain Knowledge Required**:
+- None
+
+**Discord API Calls**:
+- `app_commands.command()`
+- `await ctx.user.send()`
+
+**Database Tables Used**:
+- `welcomed_users` (via _maybe_welcome)
+
+**Performance Constraints**:
+- None
+
+**Dependencies**:
+- User system feature (welcome DM)
+
+---
+
 - None
 
 **Discord API Calls**:

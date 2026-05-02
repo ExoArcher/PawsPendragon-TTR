@@ -21,6 +21,7 @@ Sections
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1078,6 +1079,66 @@ def format_sillymeter(data: dict[str, Any] | None) -> discord.Embed:
                 )
 
     _footer(embed, as_of)
+    return embed
+
+
+# ── BUILD MAINTENANCE / STOP / RESTART EMBEDS ────────────────────────────────
+
+def build_maintenance_embed() -> discord.Embed:
+    """Build maintenance mode embed for console commands.
+
+    Returns a single embed with:
+    - Title: "⚠️ MAINTENANCE MODE ACTIVE"
+    - Description: Brief maintenance notice
+    - Footer: "Maintenance started [timestamp]"
+    - Color: Orange
+    """
+    now_unix = int(time.time())
+    embed = discord.Embed(
+        title="⚠️ MAINTENANCE MODE ACTIVE",
+        description="Server is under maintenance. Live feeds are paused. Check back soon.",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"Maintenance started {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    return embed
+
+
+def build_stop_embed() -> discord.Embed:
+    """Build bot shutdown embed for console commands.
+
+    Returns a single embed with:
+    - Title: "⛔ BOT SHUTTING DOWN"
+    - Description: Shutdown notice
+    - Footer: "[timestamp]"
+    - Color: Red
+    """
+    embed = discord.Embed(
+        title="⛔ BOT SHUTTING DOWN",
+        description="Paws Pendragon is shutting down. Live feeds have been suspended.",
+        color=discord.Color.red(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"Shutdown initiated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    return embed
+
+
+def build_restart_embed() -> discord.Embed:
+    """Build bot restart embed for console commands.
+
+    Returns a single embed with:
+    - Title: "🔄 BOT RESTARTING"
+    - Description: Restart notice
+    - Footer: "[timestamp]"
+    - Color: Yellow
+    """
+    embed = discord.Embed(
+        title="🔄 BOT RESTARTING",
+        description="Paws Pendragon is restarting. Live feeds will resume shortly.",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"Restart initiated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     return embed
 
 

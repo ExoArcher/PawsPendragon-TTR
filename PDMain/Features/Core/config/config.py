@@ -21,10 +21,67 @@ _dotenv_paths = [
 for _path in _dotenv_paths:
     if _os_for_dotenv.path.exists(_path):
         load_dotenv(dotenv_path=_path)
+        _LIVE_ENV_PATH: str = _path
         break
 else:
     # No .env found, still call load_dotenv to check environment variables
     load_dotenv()
+    _LIVE_ENV_PATH = ".env"
+
+
+def find_env_path() -> str:
+    """Return the path to the live .env file used at startup."""
+    return _LIVE_ENV_PATH
+
+
+def update_env_var(name: str, value: str) -> str:
+    """Rewrite *name=value* in the live .env file in place.
+
+    Preserves all other lines and comments. If the key doesn't exist,
+    appends it. Returns the path of the file that was written.
+    """
+    path = find_env_path()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        lines = []
+
+    key_prefix = f"{name}="
+    replaced = False
+    new_lines = []
+    for line in lines:
+        if line.lstrip().startswith(key_prefix) or line.lstrip().startswith(f"#{key_prefix}"):
+            # Replace (also un-comments if was commented out)
+            new_lines.append(f"{name}={value}\n")
+            replaced = True
+        else:
+            new_lines.append(line)
+
+    if not replaced:
+        new_lines.append(f"{name}={value}\n")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+    return path
+
+
+def read_env_var(name: str) -> str:
+    """Read the current raw value of *name* from the live .env file.
+
+    Returns empty string if the key is absent or the file doesn't exist.
+    """
+    path = find_env_path()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith(f"{name}="):
+                    return stripped[len(name) + 1:]
+    except FileNotFoundError:
+        pass
+    return ""
 
 
 def _required(name: str) -> str:
