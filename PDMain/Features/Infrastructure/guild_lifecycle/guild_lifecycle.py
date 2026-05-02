@@ -58,19 +58,8 @@ class GuildLifecycleManager:
         return self.bot.state.setdefault("guilds", {})
 
     async def _sync_commands_to_guild(self, guild: discord.Guild) -> None:
-        """Clear and sync all commands for a specific guild.
-
-        This prevents Discord UI duplication by ensuring only guild-specific
-        commands are shown, not a mix of global + guild commands.
-        """
-        try:
-            self.bot.tree.clear_commands(guild=guild)
-            await self.bot.tree.sync(guild=guild)
-            self.bot.tree.copy_global_to(guild=guild)
-            await self.bot.tree.sync(guild=guild)
-            log.info("Command sync OK for %s (id=%s)", guild.name, guild.id)
-        except Exception:
-            log.exception("Command sync failed for %s (id=%s)", guild.name, guild.id)
+        """Deprecated: Commands are now synced globally in setup_hook."""
+        pass
 
     async def _notify_and_leave(self, guild: discord.Guild) -> None:
         """Send closed-access DM to guild owner, then leave the guild.
