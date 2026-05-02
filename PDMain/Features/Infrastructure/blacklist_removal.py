@@ -19,6 +19,7 @@ import discord
 
 from Features.Core.db import db
 from Features.Core.config.config import update_env_var
+from Features.Infrastructure import cache_manager
 
 if TYPE_CHECKING:
     from bot import TTRBot
@@ -79,11 +80,9 @@ async def check_blacklist_removal_timers(bot: TTRBot) -> int:
             # Delete from quarantined_guilds
             await db.remove_quarantined_guild(str(guild_id))
 
-            # Update caches
-            if hasattr(bot, "BlacklistedServerid"):
-                bot.BlacklistedServerid.discard(guild_id)
-            if hasattr(bot, "QuarantinedServerid"):
-                bot.QuarantinedServerid.discard(guild_id)
+            # Update in-memory caches immediately (don't wait for 6-hour refresh)
+            cache_manager.BlacklistedServerid.discard(guild_id)
+            cache_manager.QuarantinedServerid.discard(guild_id)
 
             # Log to audit_log
             await db.audit_log_event(

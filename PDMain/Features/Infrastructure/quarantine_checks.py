@@ -21,6 +21,7 @@ import aiosqlite
 import discord
 
 from Features.Core.db import db
+from Features.Infrastructure import cache_manager
 
 if TYPE_CHECKING:
     from bot import TTRBot
@@ -136,11 +137,9 @@ async def trigger_quarantine(
         )
         await database.commit()
 
-    # Update caches (if they exist on bot)
-    if hasattr(bot, "QuarantinedServerid"):
-        bot.QuarantinedServerid.add(guild_id)
-    if hasattr(bot, "BlacklistedServerid"):
-        bot.BlacklistedServerid.add(guild_id)
+    # Update in-memory caches immediately (don't wait for 6-hour refresh)
+    cache_manager.QuarantinedServerid.add(guild_id)
+    cache_manager.BlacklistedServerid.add(guild_id)
 
     log.info("[quarantine] Quarantined guild %s, blacklisted owner %s", guild_id, owner_id)
 

@@ -20,6 +20,7 @@ import discord
 
 from Features.Core.db import db
 from Features.Infrastructure.quarantine_checks import DANGEROUS_PERMS
+from Features.Infrastructure import cache_manager
 
 if TYPE_CHECKING:
     from bot import TTRBot
@@ -119,9 +120,8 @@ async def trigger_unquarantine(bot: TTRBot, guild_id: int, owner_id: int) -> Non
         log.warning("[unquarantine] Guild %s was not in quarantine; skipping", guild_id)
         return
 
-    # Update QuarantinedServerid cache
-    if hasattr(bot, "QuarantinedServerid"):
-        bot.QuarantinedServerid.discard(guild_id)
+    # Update in-memory cache immediately (don't wait for 6-hour refresh)
+    cache_manager.QuarantinedServerid.discard(guild_id)
 
     # Log to audit_log
     await db.audit_log_event(
