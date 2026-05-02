@@ -148,17 +148,17 @@ async def trigger_quarantine(
         "guild_id": guild_id,
         "banned_user_ids": banned_user_ids_list,
     })
-    await db.audit_log_event(
-        guild_id=guild_id,
+    await db.log_audit_event(
         event_type="guild_quarantined",
         details=details_json,
+        guild_id=guild_id,
         triggered_by_user_id=0,
     )
 
-    await db.audit_log_event(
-        guild_id=guild_id,
+    await db.log_audit_event(
         event_type="guild_blacklisted",
         details=json.dumps({"guild_id": guild_id, "owner_id": owner_id}),
+        guild_id=guild_id,
         triggered_by_user_id=0,
     )
 
@@ -274,19 +274,19 @@ async def send_quarantine_dm_to_owner(
                     except Exception as exc:
                         log.warning("[quarantine] Failed to post fallback to channel %s: %s", ch_id, exc)
 
-        await db.audit_log_event(
-            guild_id=guild_id,
+        await db.log_audit_event(
             event_type="quarantine_dm_failed",
             details=json.dumps({"owner_id": owner_id}),
+            guild_id=guild_id,
             triggered_by_user_id=0,
         )
 
     except Exception as exc:
         log.error("[quarantine] Failed to send DM to owner %s: %s", owner_id, exc)
-        await db.audit_log_event(
-            guild_id=guild_id,
+        await db.log_audit_event(
             event_type="quarantine_dm_failed",
             details=json.dumps({"owner_id": owner_id, "error": str(exc)}),
+            guild_id=guild_id,
             triggered_by_user_id=0,
         )
 

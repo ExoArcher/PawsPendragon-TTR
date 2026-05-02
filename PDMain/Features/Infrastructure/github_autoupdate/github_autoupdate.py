@@ -13,7 +13,6 @@ Ensures the bot runs the latest code from GitHub on every startup:
 import os
 import subprocess
 import sys
-from typing import None as NoneType
 
 
 # Git configuration
@@ -27,7 +26,10 @@ def auto_update_from_github() -> None:
 
     Initializes .git repo if missing, fetches latest code, and restarts
     the process if an update is available. Hash comparison prevents infinite
-    restart loops. Hard reset discards local changes (production deployment).
+    restart loops. Uses --ff-only to safely merge (does not hard reset).
+
+    Respects AUTO_UPDATE env var (default "true"). If set to "false", skips
+    all git operations.
 
     Startup flow:
     1. If no .git directory:
@@ -40,13 +42,21 @@ def auto_update_from_github() -> None:
        - Fetch latest main from origin
        - Get local HEAD hash
        - Get remote HEAD hash
-       - If different: reset to remote, print update, restart
+       - If different: attempt --ff-only pull, print update, restart
+       - If --ff-only fails (history diverged): warn and continue with existing code
        - Else: print up-to-date message, continue
 
     Raises:
-        subprocess.CalledProcessError: If any git command fails
+        subprocess.CalledProcessError: If any git command fails (caught and handled)
         Exception: Any unhandled exception is caught and printed to stdout
     """
+    # Check AUTO_UPDATE env var (default "true" for backwards compatibility)
+    auto_update_enabled: bool = os.getenv("AUTO_UPDATE", "true").lower() in ("true", "1", "yes")
+
+    if not auto_update_enabled:
+        print("[auto-update] AUTO_UPDATE is disabled. Skipping git update.", flush=True)
+        return
+
     try:
         bot_dir: str = os.path.dirname(os.path.abspath(__file__))
         git_dir: str = os.path.join(bot_dir, ".git")
@@ -121,19 +131,26 @@ def auto_update_from_github() -> None:
 
             # Compare hashes
             if local_hash != remote_hash:
-                # Update available -- reset to remote and restart
-                subprocess.run(
-                    ["git", "reset", "--hard", f"{REMOTE}/{BRANCH}"],
-                    cwd=bot_dir,
-                    check=True,
-                    capture_output=True,
-                )
-
-                print(
-                    f"[auto-update] Updated {local_hash[:7]} -> {remote_hash[:7]}. Restarting...",
-                    flush=True,
-                )
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                # Update available -- attempt fast-forward merge
+                try:
+                    subprocess.run(
+                        ["git", "pull", "--ff-only", REMOTE, BRANCH],
+                        cwd=bot_dir,
+                        check=True,
+                        capture_output=True,
+                    )
+                    print(
+                        f"[auto-update] Updated {local_hash[:7]} -> {remote_hash[:7]}. Restarting...",
+                        flush=True,
+                    )
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                except subprocess.CalledProcessError:
+                    # History diverged; cannot fast-forward
+                    print(
+                        f"[auto-update] WARNING: Cannot fast-forward ({local_hash[:7]} vs {remote_hash[:7]}). "
+                        f"History may have diverged. Continuing with existing code.",
+                        flush=True,
+                    )
 
             else:
                 # Already up to date

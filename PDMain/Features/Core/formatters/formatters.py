@@ -1161,3 +1161,58 @@ FORMATTERS = {
     ],
     "doodles": lambda d: format_doodles(d.get("doodles")),
 }
+
+
+def validate_config() -> None:
+    """Verify that env vars at import time match Config values at runtime.
+
+    Phase 1 fix: emit a warning if env-var-at-import diverged from Config.
+    This documents the problem without requiring full refactoring.
+
+    In a future phase, all emoji/star vars should be read from Config
+    (frozen at startup) instead of os.getenv() at import time.
+    """
+    from Features.Core.config.config import Config
+
+    config = Config.load()
+    diverged = []
+
+    # Check emoji vars
+    if os.getenv("JELLYBEAN_EMOJI", "<:Jellybeans:1496983830106603551>") != config.jellybean_emoji:
+        diverged.append(f"JELLYBEAN_EMOJI: env={os.getenv('JELLYBEAN_EMOJI')} vs config={config.jellybean_emoji}")
+
+    if os.getenv("COG_EMOJI", "<:Cog:1496996533432877078>") != config.cog_emoji:
+        diverged.append(f"COG_EMOJI: env={os.getenv('COG_EMOJI')} vs config={config.cog_emoji}")
+
+    if os.getenv("SAFE_EMOJI", "<:Safe:1497311481711165625>") != config.safe_emoji:
+        diverged.append(f"SAFE_EMOJI: env={os.getenv('SAFE_EMOJI')} vs config={config.safe_emoji}")
+
+    # Check star vars
+    star_vars = {
+        "STAR_PERFECT": config.star_perfect,
+        "STAR_AMAZING": config.star_amazing,
+        "STAR_GREAT": config.star_great,
+        "STAR_GOOD": config.star_good,
+        "STAR_OK": config.star_ok,
+        "STAR_BAD": config.star_bad,
+    }
+
+    for env_key, config_val in star_vars.items():
+        env_val = os.getenv(env_key)
+        if env_val and env_val != config_val:
+            diverged.append(f"{env_key}: env={env_val} vs config={config_val}")
+
+    # Check infinite emoji
+    if os.getenv("INFINITE_EMOJI", "<:Infinite:1497383349046607882>") != config.infinite_emoji:
+        diverged.append(f"INFINITE_EMOJI: env={os.getenv('INFINITE_EMOJI')} vs config={config.infinite_emoji}")
+
+    if diverged:
+        import logging
+        log = logging.getLogger(__name__)
+        log.warning(
+            "formatters.py env vars diverged from Config at startup. "
+            "Values loaded at import time do NOT match Config. "
+            "Divergences: %s. "
+            "Restart bot to reload.",
+            "; ".join(diverged)
+        )

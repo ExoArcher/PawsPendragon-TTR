@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Paws Pendragon is a multi-guild Discord bot that mirrors live Toontown Rewritten API data into pinned Discord embeds. One hosted instance serves multiple Discord servers via an allowlist. The bot supports both traditional server installs and Discord's User App feature.
 
-The project is currently transitioning from a monolithic `bot.py` (71KB, 1454 lines) to a modular architecture with cleanly separated features (see `FEATURE_SPECIFICATIONS.md` for the full refactoring plan).
+The project is currently transitioning from a monolithic `bot.py` to a modular architecture with cleanly separated features (see `FEATURE_SPECIFICATIONS.md` for the full refactoring plan).
 
 **Python requirement**: Requires Python 3.9+.
 
@@ -77,7 +77,7 @@ python -c "from Features.Core.db import db; print('OK')"
 **To work on a specific feature (30 mins):**
 1. Locate the feature in `FEATURE_SPECIFICATIONS.md` (Features 1–18)
 2. Read the corresponding `BRIEFING.md` in `PDMain/Features/<Category>/<feature_name>/BRIEFING.md`
-3. If extracting from `bot.py`, search the line numbers listed in the spec
+3. For line-by-line details, check `FEATURE_SPECIFICATIONS.md` for the exact code sections
 4. If modifying Core utilities, check `PDMain/Features/Core/*/BRIEFING.md`
 
 **Key modules to understand first** (before working on features):
@@ -100,15 +100,7 @@ When adding features, prefer the modular structure and create/update `BRIEFING.m
 
 This is where the bot runs from. Contains:
 
-- **`bot.py`** — The main `TTRBot` class (subclass of `discord.AutoShardedClient`). Owns: refresh loop, all slash commands (11 total), state management, ban/maintenance/welcome systems.
-  - Lines 1-50: Auto-update from GitHub (pre-startup)
-  - Lines 51-200: Imports, Config loading, TTRBot class init
-  - Lines 201-400: Helper methods (guild allowlist, command sync, message management)
-  - Lines 401-700: Core loops (_refresh_loop, _fetch_all, _update_feed)
-  - Lines 701-800: Sweep loop (_sweep_loop, message cleanup)
-  - Lines 801-900: Announcements & maintenance handling
-  - Lines 901-1000: User system (welcome DMs, ban enforcement)
-  - Lines 1001-1454: Slash commands (11 total)
+- **`bot.py`** — The main `TTRBot` class (subclass of `discord.AutoShardedClient`). Owns: refresh loop, slash commands, state management, ban/maintenance/welcome systems. See `FEATURE_SPECIFICATIONS.md` for feature-to-line-range mappings.
 
 - **`Features/`** — Modular feature directory (refactoring in progress):
   - **Core/** — Core utilities: `config.py`, `db.py` (SQLite async layer), `formatters.py` (TTR JSON → Discord embeds), `ttr_api.py` (aiohttp client for TTR public endpoints).
@@ -123,16 +115,26 @@ This is where the bot runs from. Contains:
 
 ### Root-Level Files
 
-- **`FEATURE_SPECIFICATIONS.md`** — The master refactoring spec: breaks down 17+ modular features with scope, dependencies, TTR domain knowledge, and database table requirements.
+- **`FEATURE_SPECIFICATIONS.md`** — The master refactoring spec: breaks down 17+ modular features with scope, dependencies, TTR domain knowledge, database table requirements, and line numbers for extraction from `bot.py`.
 - **`bot.db`** — SQLite database (auto-created on first run).
 - **`.env`** — Your local test secrets (never commit).
 
 ## Architecture
 
+### TTR API Endpoints
+
+The bot calls the following public Toontown Rewritten API endpoints (via `Features/Core/ttr_api/ttr_api.py`):
+
+- `/api/population` — Current district populations
+- `/api/fieldoffices` — Active Field Office locations & difficulty
+- `/api/doodles` — Available doodles for purchase (trait ratings)
+- `/api/sillymeter` — Current Silly Meter progress (team scores)
+- **Invasions not used** — Per user constraint; building-level data unavailable from TTR API
+
 ### Data Flow (90-second refresh loop)
 
 1. Every `REFRESH_INTERVAL` seconds (default 90s), `_refresh_loop()` fires in `bot.py`.
-2. `_fetch_all()` gathers all 5 TTR API endpoints in parallel (population, fieldoffices, doodles, sillymeter, no invasions).
+2. `_fetch_all()` gathers the 4 available TTR API endpoints in parallel (population, fieldoffices, doodles, sillymeter).
 3. For each tracked guild + feed key, `_update_feed()` is called:
    - Looks up the formatter from `formatters.FORMATTERS` dict.
    - Builds the embed(s).
@@ -140,6 +142,10 @@ This is where the bot runs from. Contains:
    - Waits 3 seconds between guild edits to respect Discord rate limits.
 4. Doodle embeds are throttled to once every 12 hours (unless forced via `/pdrefresh`).
 5. Every 15 minutes, `_sweep_loop()` runs to delete stale bot messages.
+
+### Static Feeds (Suit Calculator)
+
+The `/calculate` command and `#suit-calculator` channel display static embeds showing promotion point tables for cog suit levels. There are 4 embeds per faction (Sellbot, Cashbot, Lawbot, Bossbot), covering V1 and V2 suit variants. These are built on startup and `/pdrefresh` only, not on the 90-second refresh loop. Generated by `Features/User/calculate/calculate.py`.
 
 ### State Persistence
 
@@ -153,21 +159,64 @@ All state lives in SQLite (`bot.db`):
 - **`banned_users`** — Ban records (user_id → {reason, banned_at, banned_by, banned_by_id}).
 - **`maintenance_msgs`** — One message ID per guild × feed during maintenance.
 
-On first run, a one-time idempotent migration from legacy JSON files (`state.json` v1/v2, `welcomed_users.json`, `banned_users.json`, `maintenance_mode.json`) to SQLite is performed.
+**Legacy migration (first run only):** If legacy JSON state files exist from a prior version (`state.json` v1/v2, `welcomed_users.json`, `banned_users.json`, `maintenance_mode.json`), they are automatically migrated to SQLite on startup. After migration, JSON files are safe to delete. For new instances, SQLite is initialized directly.
 
 ## Development Workflows
 
 ### Running the Bot Locally
 
-1. Set up `.env` with a test Discord server (see `DEPLOY.md` for how to get credentials).
-2. Run: `python -u PDMain/bot.py`
-3. The bot logs to stdout with level INFO. Watch for:
-   - `[auto-update]` messages (GitHub sync)
-   - `on_ready()` logs (guild sync, command registration)
-   - `_refresh_loop()` messages (90-second ticks)
-4. Verify changes work:
-   - Run `/pdrefresh` in your test guild to force an immediate data fetch and UI update.
-   - Check console output for errors.
+1. **Set up a test Discord server:**
+   - Create a private test server in Discord (just you + the bot)
+   - Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode)
+   - Right-click the server → Copy Server ID
+   - Add this ID to `GUILD_ALLOWLIST` in `PDMain/.env`
+
+2. **Start the bot:**
+   ```bash
+   cd PDMain && python -u bot.py
+   ```
+
+3. **Watch the startup logs for:**
+   - `[auto-update]` — GitHub sync on startup
+   - `on_ready()` — guild/command sync completion
+   - `_refresh_loop()` — 90-second tick messages (first one fires ~90s after startup)
+
+4. **Test changes in Discord:**
+   - Run `/pdsetup` to create the feed channels and post placeholder messages
+   - Run `/pdrefresh` to force immediate data fetch and embed update
+   - Check bot console for errors: `2>&1 | grep -i error`
+
+5. **Verify state in the database:**
+   ```bash
+   sqlite3 PDMain/bot.db "SELECT * FROM guild_feeds WHERE guild_id = <your_guild_id>;"
+   ```
+
+### Testing Console Commands Locally
+
+Console commands are stdin-only and designed for the Cybrancee hosting panel. To test locally:
+
+1. **Start the bot:**
+   ```bash
+   cd PDMain && python -u bot.py
+   ```
+
+2. **Send commands via stdin** (in another terminal, from the PDMain directory):
+   ```bash
+   # Test a single command
+   echo "maintenance" | python -u bot.py
+   
+   # Or interact via pipe
+   python -u bot.py < <(echo "help"; sleep 1; echo "stop")
+   ```
+
+3. **Available console commands** (see `Features/ServerManagement/console_commands/console_commands.py`):
+   - `help` — List all console commands
+   - `maintenance` — Toggle maintenance banner across all tracked servers
+   - `announce <text>` — Broadcast a message to all servers' `#tt-information` channels (auto-deletes after 30 min)
+   - `restart` — Notify all servers, then hot-restart the bot process
+   - `stop` — Notify all servers, then shut down gracefully
+
+4. **Watch the console** for output and check Discord channels for the result.
 
 ### Debugging a Feature
 
@@ -241,7 +290,7 @@ To add a new live feed (e.g., a new TTR API endpoint):
 
 - **Embed edit rate-limited?** Intentional: bot waits 3 seconds between consecutive edits per guild.
 
-- **"Invasions" showing as empty?** Intentional; building data is unavailable per user constraint.
+- **Invasions not showing?** Intentional per user constraint; building-level data is unavailable from the TTR API. See FEATURE_SPECIFICATIONS.md for details.
 
 - **Lost aiohttp connections?** Always use `ttr_api.TTRClient()` as a context manager.
 
@@ -308,7 +357,7 @@ See `PDMain/DEPLOY.md` for full setup, invite URLs, and troubleshooting.
 ## See Also
 
 - **`PDMain/CLAUDE.md`** — Detailed bot module documentation (deep reference for each component).
-- **`FEATURE_SPECIFICATIONS.md`** — Master refactoring plan with 17+ feature specs.
+- **`FEATURE_SPECIFICATIONS.md`** — Master refactoring plan with 17+ feature specs and line-number mappings.
 - **`PDMain/README.md`** — User-facing documentation and version history.
 - **`PDMain/DEPLOY.md`** — Hosting setup guide.
 - **Feature BRIEFINGs** — Each feature in `PDMain/Features/` has a `BRIEFING.md` explaining scope.

@@ -28,11 +28,13 @@ from typing import Any
 import discord
 from discord.ext import tasks
 
+from Features.Infrastructure import cache_manager
+
 log = logging.getLogger("ttr-bot.live-feeds")
 
 # Constants
 DOODLE_REFRESH_INTERVAL = 12 * 60 * 60  # 12 hours in seconds
-ANNOUNCE_FILE = Path(__file__).with_name("panel_announce.txt").resolve()
+ANNOUNCE_FILE = Path(__file__).parents[3] / "panel_announce.txt"
 ANNOUNCEMENT_TITLE = "<:Lav:1499503216084390019> Paws Pendragon Dev Notice <:Lav:1499503216084390019>"
 ANNOUNCEMENT_TTL_SECONDS = 30 * 60
 
@@ -121,6 +123,8 @@ class LiveFeedsFeature:
 
                 if not self.is_guild_allowed(guild_id) or self.get_guild(guild_id) is None:
                     continue
+                if guild_id in cache_manager.QuarantinedServerid:
+                    continue
 
                 for feed_key in self.config.feeds():
                     # Skip doodle embeds unless the 12-hour interval has elapsed
@@ -162,7 +166,7 @@ class LiveFeedsFeature:
         - Respects 3-second delays between consecutive edits (rate limiting)
         - Updates stored message IDs if messages are recreated
         """
-        from formatters import FORMATTERS
+        from Features.Core.formatters.formatters import FORMATTERS
 
         entry = self._guild_state(guild_id).get(feed_key)
         if not entry:

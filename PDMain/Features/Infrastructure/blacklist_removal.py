@@ -85,10 +85,10 @@ async def check_blacklist_removal_timers(bot: TTRBot) -> int:
             cache_manager.QuarantinedServerid.discard(guild_id)
 
             # Log to audit_log
-            await db.audit_log_event(
-                guild_id=guild_id,
+            await db.log_audit_event(
                 event_type="guild_blacklist_removal_auto",
                 details=json.dumps({"guild_id": guild_id, "owner_id": owner_id}),
+                guild_id=guild_id,
                 triggered_by_user_id=0,
             )
 

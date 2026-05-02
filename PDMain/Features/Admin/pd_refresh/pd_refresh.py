@@ -7,7 +7,7 @@ for the scheduled 90-second refresh cycle.
 
 Responsibilities:
   - /pd-refresh slash command handler
-  - Call _refresh_once(force_doodles=True) immediately
+  - Call _refresh_once(force_doodles=True) immediately (iterates ALL formatter keys via config.feeds())
   - Call _sweep_guild_stale() for caller's guild only
   - Call _ensure_suit_calculator_pin() for caller's guild
   - Send ephemeral response to user
@@ -18,7 +18,8 @@ Refresh Flow:
   2. Send ephemeral response "Refreshing..." (deferred)
   3. Force _refresh_once(force_doodles=True)
      - Fetch all TTR endpoints immediately
-     - Update all embeds
+     - Iterate over ALL feed keys from config.feeds() (not just information)
+     - Update all embeds for all configured feeds
      - Force doodle update even if within 12-hour window
   4. Sweep this guild immediately
      - Delete stale messages
@@ -27,8 +28,9 @@ Refresh Flow:
 
 Force Doodles:
   When force_doodles=True is passed to _refresh_once():
-  - Reset _last_doodle_refresh timestamp
-  - Fetch and update doodles even if within 12-hour throttle
+  - Bypass the 12-hour doodle throttle
+  - Force fetch and update doodles even if recently updated
+  - Purpose: Allow admins to manually refresh doodles without waiting for the scheduled window
 
 Dependencies:
   - Infrastructure/live-feeds (_refresh_once with force_doodles flag)
@@ -61,9 +63,27 @@ def register_pd_refresh(bot: TTRBot) -> None:
     to force an immediate refresh of TTR feeds, update suit calculators,
     and sweep stale messages from their guild.
 
+    Performs startup assertion: Verifies that FORMATTERS.keys() matches
+    config.feeds().keys(). If they diverge, logs a warning (formatter keys
+    may be missing or stale).
+
     Args:
         bot: The TTRBot instance to register the command with.
     """
+    # Import here to avoid circular imports
+    from Features.Core.formatters.formatters import FORMATTERS
+
+    # Startup assertion: verify formatter keys align with config feed keys
+    formatter_keys = set(FORMATTERS.keys())
+    config_feed_keys = set(bot.config.feeds().keys())
+    if formatter_keys != config_feed_keys:
+        log.warning(
+            "[pd_refresh] Formatter keys diverged from config.feeds() keys. "
+            "Formatters: %s, Config feeds: %s. "
+            "This may indicate missing or stale formatter definitions.",
+            sorted(formatter_keys),
+            sorted(config_feed_keys),
+        )
 
     @bot.tree.command(
         name="pd-refresh",
@@ -75,10 +95,11 @@ def register_pd_refresh(bot: TTRBot) -> None:
 
         This command:
           1. Immediately calls _refresh_once(force_doodles=True) to fetch all TTR endpoints
-          2. Forces doodle update even if within the 12-hour throttle window
-          3. Sweeps stale messages from the caller's guild
-          4. Refreshes the suit calculator embeds for the caller's guild
-          5. Sends an ephemeral response with results
+          2. Iterates over ALL feed keys from config.feeds() and updates embeds (not just information)
+          3. Bypasses the 12-hour doodle throttle window (force_doodles=True)
+          4. Sweeps stale messages from the caller's guild
+          5. Refreshes the suit calculator embeds for the caller's guild
+          6. Sends an ephemeral response with results
 
         Permission Requirements:
           - Manage Messages permission recommended (bypasses 10-minute cooldown)

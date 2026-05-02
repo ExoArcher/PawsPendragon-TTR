@@ -43,15 +43,20 @@ class TTRApiClient:
             await self._session.close()
             self._session = None
 
-    async def _get(self, url: str) -> dict[str, Any] | None:
+    async def _get(self, url: str, *, retries: int = 3, base_delay: float = 1.0) -> dict[str, Any] | None:
         assert self._session is not None, "Use `async with TTRApiClient(...)`"
-        try:
-            async with self._session.get(url) as resp:
-                resp.raise_for_status()
-                return await resp.json(content_type=None)
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            log.warning("TTR API request failed for %s: %s", url, e)
-            return None
+        for attempt in range(retries):
+            try:
+                async with self._session.get(url) as resp:
+                    resp.raise_for_status()
+                    return await resp.json(content_type=None)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if attempt < retries - 1:
+                    delay = base_delay * (2 ** attempt)  # 1s, 2s, 4s
+                    await asyncio.sleep(delay)
+                else:
+                    log.warning("TTR API failed after %d attempts for %s: %s", retries, url, e)
+                    return None
 
     async def invasions(self) -> dict[str, Any] | None:
         return await self._get(ENDPOINTS["invasions"])

@@ -71,35 +71,47 @@ def _clear_bytecode_cache(_path: str) -> None:
     except Exception:
         pass
 
-try:
-    if not _os.path.isdir(_os.path.join(_BOT_DIR, ".git")):
-        print("[auto-update] No .git found -- initialising repo from GitHub...", flush=True)
-        _subprocess.run(["git", "init"],                                cwd=_BOT_DIR, check=True, capture_output=True)
-        _subprocess.run(["git", "remote", "add", "origin", _GIT_REPO],  cwd=_BOT_DIR, check=True, capture_output=True)
-        _subprocess.run(["git", "fetch", "origin", "main"],              cwd=_BOT_DIR, check=True, capture_output=True)
-        _subprocess.run(["git", "checkout", "-b", "main", "--track", "origin/main"],
-                        cwd=_BOT_DIR, check=True, capture_output=True)
-        print("[auto-update] Repo initialised. Restarting with GitHub code...", flush=True)
-        _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
-    else:
-        # Compare local HEAD vs remote to avoid infinite restart loop.
-        _subprocess.run(["git", "fetch", "origin", "main"],
-                        cwd=_BOT_DIR, check=True, capture_output=True)
-        _local  = _subprocess.run(["git", "rev-parse", "HEAD"],
-                                  cwd=_BOT_DIR, capture_output=True, text=True).stdout.strip()
-        _remote = _subprocess.run(["git", "rev-parse", "origin/main"],
-                                  cwd=_BOT_DIR, capture_output=True, text=True).stdout.strip()
-        if _local != _remote:
-            _subprocess.run(["git", "reset", "--hard", "origin/main"],
+# Check AUTO_UPDATE env var (default "true" for backwards compatibility)
+_AUTO_UPDATE = _os.getenv("AUTO_UPDATE", "true").lower() in ("true", "1", "yes")
+
+if _AUTO_UPDATE:
+    try:
+        if not _os.path.isdir(_os.path.join(_BOT_DIR, ".git")):
+            print("[auto-update] No .git found -- initialising repo from GitHub...", flush=True)
+            _subprocess.run(["git", "init"],                                cwd=_BOT_DIR, check=True, capture_output=True)
+            _subprocess.run(["git", "remote", "add", "origin", _GIT_REPO],  cwd=_BOT_DIR, check=True, capture_output=True)
+            _subprocess.run(["git", "fetch", "origin", "main"],              cwd=_BOT_DIR, check=True, capture_output=True)
+            _subprocess.run(["git", "checkout", "-b", "main", "--track", "origin/main"],
                             cwd=_BOT_DIR, check=True, capture_output=True)
-            # Clear bytecode cache to force recompilation of all modules
-            _clear_bytecode_cache(_BOT_DIR)
-            print(f"[auto-update] Updated {_local[:7]} -> {_remote[:7]}. Cleared bytecode cache. Restarting...", flush=True)
+            print("[auto-update] Repo initialised. Restarting with GitHub code...", flush=True)
             _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
         else:
-            print(f"[auto-update] Already up to date ({_local[:7]}).", flush=True)
-except Exception as _e:
-    print(f"[auto-update] WARNING: git update failed ({_e}). Running existing code.", flush=True)
+            # Compare local HEAD vs remote to avoid infinite restart loop.
+            _subprocess.run(["git", "fetch", "origin", "main"],
+                            cwd=_BOT_DIR, check=True, capture_output=True)
+            _local  = _subprocess.run(["git", "rev-parse", "HEAD"],
+                                      cwd=_BOT_DIR, capture_output=True, text=True).stdout.strip()
+            _remote = _subprocess.run(["git", "rev-parse", "origin/main"],
+                                      cwd=_BOT_DIR, capture_output=True, text=True).stdout.strip()
+            if _local != _remote:
+                try:
+                    # Use --ff-only to safely merge only if fast-forward is possible
+                    _subprocess.run(["git", "pull", "--ff-only", "origin", "main"],
+                                    cwd=_BOT_DIR, check=True, capture_output=True)
+                except _subprocess.CalledProcessError:
+                    # History diverged; warn and continue with existing code
+                    print(f"[auto-update] WARNING: Cannot fast-forward ({_local[:7]} vs {_remote[:7]}). History may have diverged. Continuing with existing code.", flush=True)
+                else:
+                    # Clear bytecode cache to force recompilation of all modules
+                    _clear_bytecode_cache(_BOT_DIR)
+                    print(f"[auto-update] Updated {_local[:7]} -> {_remote[:7]}. Cleared bytecode cache. Restarting...", flush=True)
+                    _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+            else:
+                print(f"[auto-update] Already up to date ({_local[:7]}).", flush=True)
+    except Exception as _e:
+        print(f"[auto-update] WARNING: git update failed ({_e}). Running existing code.", flush=True)
+else:
+    print("[auto-update] AUTO_UPDATE is disabled. Skipping git update.", flush=True)
 # ---------------------------------------------------------------------------
 
 import asyncio
@@ -118,6 +130,8 @@ from Features.Core.config.config import Config
 from Features.Core.formatters.formatters import FORMATTERS, format_doodles, format_information, format_sillymeter
 from Features.Core.ttr_api.ttr_api import TTRApiClient
 from Features.Infrastructure import cache_manager, periodic_checks
+from Features.Infrastructure.live_feeds.live_feeds import LiveFeedsFeature
+from Features.Infrastructure.guild_lifecycle.guild_lifecycle import GuildLifecycleManager
 from Features.ServerManagement.console_commands.console_commands import run_console, clear_maintenance_on_startup
 from Features.User.calculate.calculate import register_calculate, build_suit_calculator_embeds, build_faction_thread_embeds
 
@@ -159,11 +173,12 @@ CLOSED_ACCESS_MSG = (
 # TTRBot
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TTRBot(discord.AutoShardedClient):
+class TTRBot(LiveFeedsFeature, discord.AutoShardedClient):
     def __init__(self, config: Config) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
         super().__init__(intents=intents)
+        LiveFeedsFeature.__init__(self)
 
         self.config = config
         self.tree   = app_commands.CommandTree(self)
@@ -175,11 +190,9 @@ class TTRBot(discord.AutoShardedClient):
         self._state_lock    = asyncio.Lock()
         # Set by Console 'stop' so close() skips its own duplicate broadcast.
         self._console_stop_sent: bool = False
-        # Timestamp of the last time doodle embeds were pushed to Discord.
-        # 0.0 = never, which triggers an immediate doodle refresh on first run.
-        self._last_doodle_refresh: float = 0.0
         # Per-user cooldown for /pd-refresh: user_id → last-use timestamp.
         self._refresh_cooldowns: dict[int, float] = {}
+        self._guild_lifecycle: GuildLifecycleManager | None = None
 
     # ── STATE MANAGEMENT ──────────────────────────────────────────────────────
 
@@ -249,6 +262,8 @@ class TTRBot(discord.AutoShardedClient):
         # To force a re-sync, run: python sync_commands.py
         print("[Commands] Registered successfully", flush=True)
 
+        self._guild_lifecycle = GuildLifecycleManager(self, self.config)
+
     async def close(self) -> None:
         """Broadcast maintenance notices then shut down cleanly."""
         log.info("Shutdown signal received -- sending maintenance notices...")
@@ -273,21 +288,11 @@ class TTRBot(discord.AutoShardedClient):
         )
         log.info("Bot-admin IDs: %s", ", ".join(str(i) for i in sorted(self.config.admin_ids)))
 
-        for guild in list(self.guilds):
-            if not self.is_guild_allowed(guild.id):
-                log.warning("Leaving non-allowlisted guild %s (id=%s)", guild.name, guild.id)
-                await self._notify_and_leave(guild)
+        # Validate formatters config (Phase 1 check for env-var divergence)
+        from Features.Core.formatters.formatters import validate_config
+        validate_config()
 
-        live_ids = {str(g.id) for g in self.guilds}
-        for gid in list(self._guilds_block().keys()):
-            if gid not in live_ids:
-                log.info("Pruning state for departed guild %s", gid)
-                self._guilds_block().pop(gid, None)
-
-        for guild in list(self.guilds):
-            if not self.is_guild_allowed(guild.id):
-                continue
-            log.info("Tracking guild %s (id=%s)", guild.name, guild.id)
+        await self._guild_lifecycle.on_ready()
 
         await self._cleanup_maintenance_msgs()
         print("[Maintenance Cleanup] Loaded successfully", flush=True)
@@ -317,31 +322,10 @@ class TTRBot(discord.AutoShardedClient):
         print(f"Paws Pendragon TTR is online in {guild_count} server(s).", flush=True)
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
-        if not self.is_guild_allowed(guild.id):
-            log.warning("Refusing to join non-allowlisted guild %s (id=%s)", guild.name, guild.id)
-            await self._notify_and_leave(guild)
-            return
-        log.info("Joined allowlisted guild %s (id=%s)", guild.name, guild.id)
+        await self._guild_lifecycle.on_guild_join(guild)
 
     async def on_guild_remove(self, guild: discord.Guild) -> None:
-        log.info("Removed from guild %s (id=%s)", guild.name, guild.id)
-        self._guilds_block().pop(str(guild.id), None)
-        await self._save_state()
-
-    # ── GUILD ACCESS ──────────────────────────────────────────────────────────
-
-    async def _notify_and_leave(self, guild: discord.Guild) -> None:
-        """DM the guild owner the closed-access message, then leave."""
-        try:
-            owner = guild.owner or await guild.fetch_member(guild.owner_id)
-            if owner is not None:
-                await owner.send(CLOSED_ACCESS_MSG)
-        except Exception as e:
-            log.debug("Could not DM owner of %s: %s", guild.name, e)
-        try:
-            await guild.leave()
-        except Exception as e:
-            log.warning("Failed to leave guild %s: %s", guild.id, e)
+        await self._guild_lifecycle.on_guild_remove(guild)
 
     # ── TEARDOWN ──────────────────────────────────────────────────────────────
 
@@ -709,146 +693,6 @@ class TTRBot(discord.AutoShardedClient):
             log.info("[suit-calc] Refreshed embeds for %d guild(s).", updated)
             await self._save_state()
 
-    # ── FEED REFRESH ──────────────────────────────────────────────────────────
-
-    _API_KEYS = ("invasions", "population", "fieldoffices", "doodles", "sillymeter")
-
-    async def _fetch_all(self) -> dict[str, dict | None]:
-        if self._api is None:
-            return {k: None for k in self._API_KEYS}
-        results = await asyncio.gather(
-            *(self._api.fetch(k) for k in self._API_KEYS), return_exceptions=True,
-        )
-        return {
-            k: (None if isinstance(r, BaseException) else r)
-            for k, r in zip(self._API_KEYS, results)
-        }
-
-    async def _refresh_once(self, *, force_doodles: bool = False) -> None:
-        """Refresh all live feed embeds across tracked guilds.
-
-        Doodle embeds are throttled to once every 12 hours unless
-        *force_doodles* is True (set by /pd-refresh).
-        """
-        if self._api is None:
-            return
-        async with self._refresh_lock:
-            now             = time.time()
-            refresh_doodles = force_doodles or (
-                (now - self._last_doodle_refresh) >= DOODLE_REFRESH_INTERVAL
-            )
-            api_data         = await self._fetch_all()
-            total_messages   = 0
-            guilds_updated: set[int] = set()
-
-            for guild_id_str in list(self._guilds_block().keys()):
-                try:
-                    guild_id = int(guild_id_str)
-                except ValueError:
-                    continue
-                if not self.is_guild_allowed(guild_id) or self.get_guild(guild_id) is None:
-                    continue
-                # Skip quarantined guilds (do not call _update_feed for those)
-                if guild_id in cache_manager.QuarantinedServerid:
-                    continue
-                for feed_key in self.config.feeds():
-                    # Skip doodle embeds unless the 12-hour interval has elapsed
-                    # (or this is a forced refresh from /pd-refresh).
-                    if feed_key == "doodles" and not refresh_doodles:
-                        continue
-                    try:
-                        updated = await self._update_feed(guild_id, feed_key, api_data)
-                        if updated:
-                            total_messages += updated
-                            guilds_updated.add(guild_id)
-                    except Exception:
-                        log.exception("Failed updating %s/%s", guild_id, feed_key)
-
-            if refresh_doodles:
-                self._last_doodle_refresh = now
-                log.info("Doodle embeds refreshed (next automatic refresh in 12 hours).")
-
-            if total_messages:
-                log.info(
-                    "Embed refresh: %d message(s) updated across %d server(s)",
-                    total_messages, len(guilds_updated),
-                )
-            else:
-                log.info("Embed refresh: no tracked servers to update.")
-            await self._save_state()
-
-    async def _update_feed(self, guild_id: int, feed_key: str, api_data: dict[str, dict | None]) -> int:
-        """Update a single feed for a guild. Returns the number of messages edited/sent."""
-        entry = self._guild_state(guild_id).get(feed_key)
-        if not entry:
-            return 0
-        channel = self.get_channel(int(entry["channel_id"]))
-        if not isinstance(channel, discord.TextChannel):
-            return 0
-        formatter = FORMATTERS.get(feed_key)
-        if formatter is None:
-            return 0
-        embeds = formatter(api_data)
-        if not isinstance(embeds, list):
-            embeds = [embeds]
-        if not embeds:
-            return 0
-
-        ids      = await self._ensure_messages(guild_id, feed_key, channel, at_least=len(embeds))
-        kept_ids: list[int] = []
-        edited   = 0
-
-        for mid, embed in zip(ids, embeds):
-            try:
-                await (await channel.fetch_message(mid)).edit(embed=embed)
-                kept_ids.append(mid)
-                edited += 1
-            except discord.NotFound:
-                new_msg = await channel.send(embed=embed)
-                try:
-                    await new_msg.pin(reason="Live TTR feed pin")
-                except (discord.Forbidden, discord.HTTPException):
-                    pass
-                kept_ids.append(new_msg.id)
-                edited += 1
-            except discord.HTTPException as e:
-                log.warning("Transient HTTP %s editing message %s (%s/%s) -- will retry.", e.status, mid, guild_id, feed_key)
-                kept_ids.append(mid)
-            await asyncio.sleep(3.0)
-
-        for mid in ids[len(embeds):]:
-            try:
-                await (await channel.fetch_message(mid)).edit(
-                    embed=discord.Embed(description="*(no data for this tier right now)*", color=0x9124F2)
-                )
-                kept_ids.append(mid)
-                edited += 1
-            except discord.NotFound:
-                pass
-            except discord.HTTPException as e:
-                log.warning("Transient HTTP %s on stale-slot message %s -- keeping ID.", e.status, mid)
-                kept_ids.append(mid)
-            await asyncio.sleep(3.0)
-
-        self._set_state(guild_id, feed_key, channel.id, kept_ids)
-        return edited
-
-    @tasks.loop(seconds=60)
-    async def _refresh_loop(self) -> None:
-        try:
-            await self._sweep_expired_announcements()
-        except Exception:
-            log.exception("Announcement sweep failed")
-        try:
-            await self._check_panel_announce()
-        except Exception:
-            log.exception("Panel announce check failed")
-        await self._refresh_once()
-
-    @_refresh_loop.before_loop
-    async def _before_loop(self) -> None:
-        await self.wait_until_ready()
-
     # ── STALE MESSAGE SWEEP ───────────────────────────────────────────────────
 
     def _channel_keep_ids(self, guild_id: int, channel_id: int) -> set[int]:
@@ -921,14 +765,6 @@ class TTRBot(discord.AutoShardedClient):
             total += await self._sweep_channel_stale(channel, keep_ids=self._channel_keep_ids(guild_id, channel_id))
         return total
 
-    async def _sweep_expired_announcements(self) -> None:
-        now     = time.time()
-        expired = [r for r in list(self._announcements()) if float(r.get("expires_at", 0)) <= now]
-        for record in expired:
-            await self._delete_announcement_record(record)
-        if expired:
-            await self._save_state()
-
     @tasks.loop(minutes=15)
     async def _sweep_loop(self) -> None:
         """Sweep stale bot messages from all tracked channels every 15 minutes."""
@@ -951,54 +787,6 @@ class TTRBot(discord.AutoShardedClient):
         await self.wait_until_ready()
 
     # ── ANNOUNCEMENTS ─────────────────────────────────────────────────────────
-
-    async def _broadcast_announcement(self, text: str) -> tuple[int, int, int]:
-        embed = discord.Embed(title=ANNOUNCEMENT_TITLE, description=text, color=0x9124F2)
-        embed.set_footer(text=f"This message will auto-delete in {ANNOUNCEMENT_TTL_SECONDS // 60} minutes.")
-        expires_at     = time.time() + ANNOUNCEMENT_TTL_SECONDS
-        sent = failed  = 0
-        guilds_touched: set[int] = set()
-
-        for guild_id_str, gs in list(self._guilds_block().items()):
-            try:
-                guild_id = int(guild_id_str)
-            except ValueError:
-                continue
-            for feed_key in ("information", "doodles", "suit_calculator"):
-                entry = gs.get(feed_key)
-                if not entry:
-                    continue
-                channel = self.get_channel(int(entry.get("channel_id", 0)))
-                if not isinstance(channel, discord.TextChannel):
-                    continue
-                try:
-                    msg = await channel.send(embed=embed)
-                    await self._record_announcement(guild_id, channel.id, msg.id, expires_at)
-                    sent += 1
-                    guilds_touched.add(guild_id)
-                except (discord.Forbidden, discord.HTTPException) as e:
-                    log.warning("Broadcast failed for %s/#%s: %s", guild_id, channel.name, e)
-                    failed += 1
-
-        return sent, failed, len(guilds_touched)
-
-    async def _delete_announcement_record(self, record: dict[str, Any]) -> None:
-        channel_id = int(record.get("channel_id", 0))
-        message_id = int(record.get("message_id", 0))
-        try:
-            channel = self.get_channel(channel_id)
-            if isinstance(channel, discord.TextChannel):
-                try:
-                    await (await channel.fetch_message(message_id)).delete()
-                except discord.NotFound:
-                    pass
-                except discord.Forbidden:
-                    log.warning("No permission to delete announcement %s", message_id)
-        except Exception:
-            log.exception("Failed deleting announcement %s", message_id)
-        self._announcements()[:] = [
-            r for r in self._announcements() if int(r.get("message_id", -1)) != message_id
-        ]
 
     async def _cleanup_announcements_on_startup(self) -> None:
         cleared = 0
@@ -1105,22 +893,6 @@ class TTRBot(discord.AutoShardedClient):
         await self._save_state()
         if cleaned:
             log.info("Startup cleanup: removed %d maintenance notice(s).", cleaned)
-
-    async def _check_panel_announce(self) -> None:
-        """Broadcast panel_announce.txt contents if the file exists, then delete it."""
-        if not ANNOUNCE_FILE.exists():
-            return
-        try:
-            text = ANNOUNCE_FILE.read_text(encoding="utf-8").strip()
-            ANNOUNCE_FILE.unlink()
-        except Exception as e:
-            log.warning("Could not read/delete panel_announce.txt: %s", e)
-            return
-        if not text:
-            return
-        log.info("Panel announcement detected -- broadcasting: %s", text[:80])
-        sent, failed, guilds = await self._broadcast_announcement(text)
-        log.info("Panel announcement: %d msg(s) across %d guild(s), %d failed.", sent, guilds, failed)
 
     # ── USER SYSTEM ───────────────────────────────────────────────────────────
 

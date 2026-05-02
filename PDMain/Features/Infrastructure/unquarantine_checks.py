@@ -124,10 +124,10 @@ async def trigger_unquarantine(bot: TTRBot, guild_id: int, owner_id: int) -> Non
     cache_manager.QuarantinedServerid.discard(guild_id)
 
     # Log to audit_log
-    await db.audit_log_event(
-        guild_id=guild_id,
+    await db.log_audit_event(
         event_type="guild_un_quarantined",
         details=json.dumps({"guild_id": guild_id}),
+        guild_id=guild_id,
         triggered_by_user_id=0,
     )
 
