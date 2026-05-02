@@ -323,6 +323,135 @@ class TTRBot(discord.AutoShardedClient):
         except Exception as e:
             log.warning("Failed to leave guild %s: %s", guild.id, e)
 
+    # ── TEARDOWN ──────────────────────────────────────────────────────────────
+
+    async def _run_teardown(
+        self,
+        guild: discord.Guild,
+        invoker: discord.abc.User,
+    ) -> None:
+        """Full teardown: delete threads → messages → channels → category → clean state → DM.
+
+        Order of operations:
+        1. Delete faction threads inside #suit-calc
+        2. Delete all bot-tracked messages in tracked channels
+        3. Delete tracked text channels
+        4. Delete the PendragonTTR category (if empty after step 3)
+        5. Clear guild from state and persist
+        6. Log to teardown_log.txt
+        7. DM invoker and server owner
+        """
+        guild_state = self._guilds_block().get(str(guild.id), {})
+
+        # ── Step 1: Delete faction threads ────────────────────────────────
+        suit_threads = guild_state.get("suit_threads", {})
+        for faction_key, entry in suit_threads.items():
+            if not isinstance(entry, dict):
+                continue
+            thread_id = int(entry.get("thread_id", 0))
+            if not thread_id:
+                continue
+            thread = guild.get_thread(thread_id)
+            if thread is None:
+                try:
+                    thread = await guild.fetch_channel(thread_id)  # type: ignore[assignment]
+                except (discord.NotFound, discord.HTTPException):
+                    thread = None
+            if thread is not None:
+                try:
+                    await thread.delete()
+                    log.info("[teardown] Deleted thread %s in %s", thread_id, guild.id)
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    log.warning("[teardown] Could not delete thread %s: %s", thread_id, e)
+
+        # ── Step 2 & 3: Delete messages then channels ──────────────────────
+        channel_keys = {
+            "suit_calculator": guild_state.get("suit_calculator", {}),
+            **{k: v for k, v in guild_state.items() if k not in ("suit_calculator", "suit_threads")},
+        }
+
+        deleted_channel_ids: set[int] = set()
+        for key, entry in channel_keys.items():
+            if not isinstance(entry, dict):
+                continue
+            channel_id = int(entry.get("channel_id", 0))
+            if not channel_id:
+                continue
+            channel = guild.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await guild.fetch_channel(channel_id)
+                except (discord.NotFound, discord.HTTPException):
+                    continue
+
+            # Delete stored messages first
+            msg_ids: list[int] = []
+            raw = entry.get("message_ids", [])
+            if isinstance(raw, list):
+                msg_ids = [int(m) for m in raw if m]
+
+            for mid in msg_ids:
+                try:
+                    msg = await channel.fetch_message(mid)  # type: ignore[union-attr]
+                    await msg.delete()
+                    log.info("[teardown] Deleted message %s in #%s", mid, channel.name)  # type: ignore[union-attr]
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                    log.debug("[teardown] Could not delete message %s: %s", mid, e)
+
+            # Delete the channel
+            try:
+                await channel.delete(reason="pdteardown: Pendragon cleanup")  # type: ignore[union-attr]
+                deleted_channel_ids.add(channel_id)
+                log.info("[teardown] Deleted channel %s in %s", channel_id, guild.id)
+            except (discord.Forbidden, discord.HTTPException) as e:
+                log.warning("[teardown] Could not delete channel %s: %s", channel_id, e)
+
+        # ── Step 4: Delete category if now empty ──────────────────────────
+        category = discord.utils.get(guild.categories, name=self.config.category_name)
+        if category is not None:
+            # Only delete if all remaining channels were ours (or none remain)
+            remaining = [c for c in category.channels if c.id not in deleted_channel_ids]
+            if not remaining:
+                try:
+                    await category.delete(reason="pdteardown: Pendragon cleanup")
+                    log.info("[teardown] Deleted category %r in %s", self.config.category_name, guild.id)
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    log.warning("[teardown] Could not delete category: %s", e)
+            else:
+                log.info("[teardown] Category not deleted — %d channel(s) still inside.", len(remaining))
+
+        # ── Step 5: Clear state ───────────────────────────────────────────
+        self._guilds_block().pop(str(guild.id), None)
+        await self._save_state()
+
+        # ── Step 6: Log ───────────────────────────────────────────────────
+        if hasattr(self, "_log_teardown"):
+            await self._log_teardown(guild, invoker)
+
+        # ── Step 7: DM invoker and server owner ──────────────────────────
+        pendragon_emoji = self.config.pendragon_emoji
+        dm_msg = (
+            f"Pawz Pendragon has finished tearing down in **{guild.name}**. "
+            f"To resume usage, run `/pdsetup` — {pendragon_emoji}"
+        )
+
+        # DM invoker
+        try:
+            await invoker.send(dm_msg)
+        except discord.Forbidden:
+            log.debug("[teardown] Could not DM invoker %s", invoker.id)
+
+        # DM owner (only if different from invoker)
+        if guild.owner_id and guild.owner_id != invoker.id:
+            try:
+                owner = guild.owner or await guild.fetch_member(guild.owner_id)
+                if owner:
+                    await owner.send(dm_msg)
+            except Exception as e:
+                log.debug("[teardown] Could not DM owner: %s", e)
+
+        log.info("[teardown] Completed for guild %s (%s), invoked by %s", guild.id, guild.name, invoker)
+
     # ── CHANNEL BOOTSTRAPPING ─────────────────────────────────────────────────
 
     async def _ensure_channels_for_guild(self, guild: discord.Guild) -> None:
@@ -1333,7 +1462,7 @@ class TTRBot(discord.AutoShardedClient):
         # ── /pdteardown  (bot-admins / guild managers only) ─────────────
         @self.tree.command(
             name="pdteardown",
-            description="[Server Admin Command] Stop TTR feed tracking. Channels are kept; delete them manually if needed.",
+            description="[Server Admin Command] Remove all Pendragon channels, messages, and category from this server.",
         )
         @app_commands.default_permissions(manage_channels=True, manage_messages=True)
         @app_commands.guild_only()
@@ -1342,18 +1471,54 @@ class TTRBot(discord.AutoShardedClient):
             if guild is None:
                 await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
                 return
-            existed = self._guilds_block().pop(str(guild.id), None) is not None
-            await self._save_state()
-            if existed:
-                await self._log_teardown(guild, interaction.user)
-            msg = (
-                "Stopped tracking this server. Channels still exist; delete them manually if you'd like."
-                if existed else "Nothing to tear down -- this server isn't being tracked."
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._run_teardown(guild, interaction.user)
+            await interaction.followup.send("Teardown complete.", ephemeral=True)
+
+        # ── /pdboot  (bot-admins / guild managers only) ──────────────────
+        @self.tree.command(
+            name="pdboot",
+            description="[Server Admin Command] Remove all Pendragon channels and leave this server.",
+        )
+        @app_commands.default_permissions(manage_channels=True, manage_messages=True)
+        @app_commands.guild_only()
+        async def pdboot(interaction: discord.Interaction) -> None:
+            guild = interaction.guild
+            if guild is None:
+                await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._run_teardown(guild, interaction.user)
+
+            # Build invite link
+            bot_id = self.user.id if self.user else "1496971496709689654"
+            invite_link = (
+                f"https://discord.com/oauth2/authorize"
+                f"?client_id={bot_id}"
+                f"&permissions=7318489585232976"
+                f"&scope=bot+applications.commands"
             )
-            await interaction.response.send_message(msg, ephemeral=True)
+
+            # DM the invoker before leaving
+            try:
+                await interaction.user.send(
+                    f"Pendragon is now leaving. Use this link to invite me back whenever you'd like:\n"
+                    f"{invite_link}"
+                )
+            except discord.Forbidden:
+                pass
+
+            # Send ephemeral confirmation (best-effort — interaction may expire as we leave)
+            try:
+                await interaction.followup.send("Leaving now. Goodbye!", ephemeral=True)
+            except Exception:
+                pass
+
+            log.info("pdboot: leaving guild %s (%s)", guild.id, guild.name)
+            await guild.leave()
 
         async def self_log_teardown(guild: discord.Guild, invoker: discord.abc.User) -> None:
-            """Append one line to teardown_log.txt for every /pd-teardown."""
+            """Append one line to teardown_log.txt for every /pdteardown."""
             try:
                 owner_id   = guild.owner_id
                 owner_name = "unknown"
