@@ -69,16 +69,18 @@ async def ttrinfo_command(
     results = await asyncio.gather(
         bot._api.fetch("population"),
         bot._api.fetch("fieldoffices"),
+        bot._api.fetch("invasions"),
         bot._api.fetch("sillymeter"),
         return_exceptions=True,
     )
 
     population = None if isinstance(results[0], BaseException) else results[0]
     fieldoffices = None if isinstance(results[1], BaseException) else results[1]
-    sillymeter = None if isinstance(results[2], BaseException) else results[2]
+    invasions = None if isinstance(results[2], BaseException) else results[2]
+    sillymeter = None if isinstance(results[3], BaseException) else results[3]
 
     # Check for API failures (503 Maintenance, timeouts, etc)
-    if all(x is None for x in [population, fieldoffices, sillymeter]):
+    if all(x is None for x in [population, fieldoffices, sillymeter, invasions]):
         await interaction.followup.send(
             "TTR API is currently under maintenance. Try again in a few minutes.",
             ephemeral=True,
@@ -88,7 +90,7 @@ async def ttrinfo_command(
 
     # Build embeds using the formatter
     info_embeds: list[discord.Embed] = format_information(
-        invasions=None,  # not needed for /ttrinfo
+        invasions=invasions,
         population=population,
         fieldoffices=fieldoffices,
     )
