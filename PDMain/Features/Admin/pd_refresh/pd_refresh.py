@@ -70,17 +70,19 @@ class ErrorMessages:
 
 
 def _validate_api_response(api_data: dict) -> bool:
-    """Return True only if api_data contains all required top-level keys with valid types."""
+    """Return True if api_data is a dict with expected feed keys.
+
+    Gracefully allows None/missing values for individual feeds (they degrade
+    to "data unavailable" embeds). Returns False only on fatal structure errors.
+    """
     if not isinstance(api_data, dict):
         return False
+    # Must have at least the core feed keys (may be None, but keys must exist)
     required = ("population", "fieldoffices", "doodles", "sillymeter")
     if not all(k in api_data for k in required):
         return False
-    if api_data.get("population") is None:
-        return False
-    if not isinstance(api_data.get("fieldoffices"), list):
-        return False
-    if not isinstance(api_data.get("doodles"), dict):
+    # If all values are None, something is wrong with the API
+    if all(api_data.get(k) is None for k in required):
         return False
     return True
 
