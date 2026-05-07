@@ -1,10 +1,11 @@
 """Infrastructure/live-feeds feature for Paws Pendragon TTR Discord bot.
 
 Background task that periodically fetches live TTR data and updates Discord
-embeds in tracked guilds. Runs every 90 seconds (configurable).
+embeds in tracked guilds. Information feed refreshes every 45 seconds;
+doodles refresh daily at 00:00 UTC.
 
 Core responsibilities:
-  - _refresh_loop() - Background task decorator, runs every ~90 seconds
+  - _refresh_loop() - Background task decorator, runs every 45 seconds
   - _fetch_all() - Fetch all 4 enabled TTR endpoints in parallel
   - _refresh_once() - Main refresh logic for all tracked guilds
   - _update_feed() - Edit pinned messages with new embed data
@@ -12,7 +13,7 @@ Core responsibilities:
 
 Features:
   - Rate limiting (3-second delays between consecutive edits)
-  - Doodle throttle (only refresh every 12 hours unless forced)
+  - Doodle UTC midnight throttle (only refresh at 00:00 UTC unless forced)
   - Graceful handling of stale message IDs
   - Parallel endpoint fetching via asyncio.gather()
   - TTR API 503 error handling
@@ -22,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,7 @@ from discord.ext import tasks
 
 from Features.Admin.pd_refresh.pd_refresh import _validate_api_response
 from Features.Core.config.constants import (
+    INFORMATION_FEED_REFRESH_SECONDS,
     DOODLE_REFRESH_INTERVAL_SECONDS,
     API_FETCH_TIMEOUT_SECONDS,
     PER_FEED_UPDATE_TIMEOUT_SECONDS,
@@ -65,9 +68,10 @@ class LiveFeedsFeature:
     """
 
     def __init__(self, **kwargs) -> None:
-        # Timestamp of the last time doodle embeds were pushed to Discord.
-        # 0.0 = never, which triggers an immediate doodle refresh on first run.
-        self._last_doodle_refresh: float = 0.0
+        # Date (YYYY-MM-DD string) of the last time doodle embeds were pushed to Discord.
+        # "" = never, which triggers an immediate doodle refresh on first run.
+        # Doodles refresh daily at 00:00 UTC.
+        self._last_doodle_refresh_date: str = ""
         super().__init__(**kwargs)
 
     # ── FEED REFRESH ──────────────────────────────────────────────────────────
@@ -79,7 +83,7 @@ class LiveFeedsFeature:
         Does NOT fetch invasions (per user constraint: no building data).
 
         Note: Doodles are fetched every cycle but the embeds are only
-        updated if the 12-hour throttle window has elapsed.
+        updated if it's a new UTC day (00:00 UTC boundary).
         """
         if self._api is None:
             return {"population": None, "fieldoffices": None, "doodles": None, "sillymeter": None}
@@ -121,7 +125,7 @@ class LiveFeedsFeature:
     async def _refresh_once(self, *, force_doodles: bool = False) -> None:
         """Refresh all live feed embeds across tracked guilds.
 
-        Doodle embeds are throttled to once every 12 hours unless
+        Doodle embeds are refreshed once daily at 00:00 UTC unless
         *force_doodles* is True (set by /pd-refresh).
 
         For each tracked guild, calls _update_feed() to edit pinned messages.
@@ -135,10 +139,9 @@ class LiveFeedsFeature:
         if self._api is None:
             return
 
-        now = time.time()
-        refresh_doodles = force_doodles or (
-            (now - self._last_doodle_refresh) >= DOODLE_REFRESH_INTERVAL_SECONDS
-        )
+        # Check if doodles need refresh: either forced, or it's a new UTC day
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        refresh_doodles = force_doodles or (today_utc != self._last_doodle_refresh_date)
 
         # Fetch API data OUTSIDE the lock (can take 3-10s; must not block commands)
         try:
@@ -169,7 +172,7 @@ class LiveFeedsFeature:
             guild_stats[guild_id] = {}
 
             for feed_key in self.config.feeds():
-                # Skip doodle embeds unless the 12-hour interval has elapsed
+                # Skip doodle embeds unless it's a new UTC day (00:00 UTC boundary)
                 # (or this is a forced refresh from /pd-refresh).
                 if feed_key == "doodles" and not refresh_doodles:
                     continue
@@ -216,8 +219,8 @@ class LiveFeedsFeature:
         # Hold lock ONLY for the fast final state save
         async with self._refresh_lock:
             if refresh_doodles:
-                self._last_doodle_refresh = now
-                log.info("Doodle embeds refreshed (next automatic refresh in 12 hours).")
+                self._last_doodle_refresh_date = today_utc
+                log.info("Doodle embeds refreshed (next automatic refresh at 00:00 UTC tomorrow).")
             try:
                 await self._save_state()
             except Exception:
@@ -351,14 +354,14 @@ class LiveFeedsFeature:
             self._set_state(guild_id, feed_key, channel.id, kept_ids)
         return {"msg_add": msg_add, "msg_remove": msg_remove, "msg_update": msg_update}
 
-    @tasks.loop(seconds=90)
+    @tasks.loop(seconds=45)
     async def _refresh_loop(self) -> None:
-        """Main background task running every ~90 seconds (or REFRESH_INTERVAL from config).
+        """Main background task running every 45 seconds (information feed interval).
 
         Responsibilities:
           1. Sweep expired announcements
           2. Check for panel_announce.txt and broadcast it
-          3. Call _refresh_once() to update all live feeds
+          3. Call _refresh_once() to update all live feeds (information feed every 45s, doodles at 00:00 UTC)
         """
         try:
             await self._sweep_expired_announcements()

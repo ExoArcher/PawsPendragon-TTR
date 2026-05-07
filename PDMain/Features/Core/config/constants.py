@@ -6,8 +6,12 @@ to enable single-point-of-change updates and improve testability.
 
 # ── REFRESH INTERVALS ────────────────────────────────────────────────────────
 
-# Doodle embeds are throttled to once per 12 hours to prevent spam
-DOODLE_REFRESH_INTERVAL_SECONDS = 12 * 60 * 60  # 43,200 seconds
+# Information feed (tt-info) refreshes every 45 seconds
+INFORMATION_FEED_REFRESH_SECONDS = 45
+
+# Doodle feed (tt-doodles) refreshes daily at 00:00 UTC
+# Uses UTC time check in refresh logic, not a fixed interval
+DOODLE_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60  # 86,400 seconds (for UTC 00:00 boundary check)
 
 # Message sweep loop interval (cleanup stale bot messages)
 MESSAGE_SWEEP_INTERVAL_MINUTES = 15

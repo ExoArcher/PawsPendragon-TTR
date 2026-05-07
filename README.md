@@ -21,17 +21,17 @@ After an admin runs `/pdsetup`, your server gets:
 
 | Channel | Updates | Content |
 |---------|---------|---------|
-| **`#tt-info`** | Every 120s | District populations, active Field Offices (department/difficulty/annexes/status), global Silly Meter (team scores & progress), active cog invasions. |
-| **`#tt-doodles`** | Every 12h | Every doodle for sale, sorted by rarity tier. Trait ratings + buying guide. |
+| **`#tt-info`** | Every 45s | District populations, active Field Offices (department/difficulty/annexes/status), global Silly Meter (team scores & progress), active cog invasions. |
+| **`#tt-doodles`** | Daily @ 00:00 UTC | Every doodle for sale, sorted by rarity tier. Trait ratings + buying guide. |
 | **`#suit-calc`** | On startup + `/pdrefresh` | Full progression tables for all 4 Cog factions + v1.0/v2.0 variants (4 static pinned embeds). |
 
 Clean & efficient: One pinned message per section. In-place edits. Stale messages auto-swept every 15 min.
 
 ### Live Updating Embeds
 
-Every 120 seconds, the bot fetches fresh data from the TTR API and **edits the pinned embeds in-place** with the latest information. No new messages posted — same embed, refreshed content. This keeps channels noise-free and Discord history clean.
+Every 45 seconds, the bot fetches fresh data from the TTR API and **edits the pinned embeds in-place** with the latest information. No new messages posted — same embed, refreshed content. This keeps channels noise-free and Discord history clean.
 
-Doodle embeds update once every 12 hours (unless forced via `/pdrefresh`). Suit calculator embeds don't follow the 120-second loop; they're static and only update on bot startup and `/pdrefresh`.
+Doodle embeds update once daily at 00:00 UTC (unless forced via `/pdrefresh`). Suit calculator embeds don't follow the 45-second loop; they're static and only update on bot startup and `/pdrefresh`.
 
 ---
 
@@ -127,7 +127,7 @@ Uses `discord.AutoShardedClient` to efficiently shard across Discord when servin
 All I/O is async: aiohttp for TTR API calls, aiosqlite for SQLite operations, asyncio for background tasks. Non-blocking throughout.
 
 ### Live Feed System
-**90-second refresh loop** polls TTR API endpoints in parallel, then updates all tracked guild channels in place. Respects Discord rate limits with per-guild throttling.
+**45-second refresh loop** polls TTR API endpoints in parallel for information feeds, then updates all tracked guild channels in place. Doodle embeds refresh once daily at 00:00 UTC. Respects Discord rate limits with per-guild throttling.
 
 ### State Persistence
 All server state (guild ID, channel IDs, message IDs, preferences) lives in SQLite (`bot.db`). Auto-initializes on first run. Legacy JSON files from v1.x are automatically migrated.
@@ -146,11 +146,11 @@ The bot consumes 5 public Toontown Rewritten endpoints:
 
 | Endpoint | Data | Update Frequency |
 |----------|------|------------------|
-| `/api/population` | District populations per server | Every 120s |
-| `/api/fieldoffices` | Active Field Office locations, difficulty, open/closed status | Every 120s |
-| `/api/doodles` | Available doodles for purchase with trait ratings | Every 12 hours |
-| `/api/sillymeter` | Silly Meter team scores and global progress | Every 120s |
-| `/api/invasions` | Active cog invasions by department | Every 120s |
+| `/api/population` | District populations per server | Every 45s |
+| `/api/fieldoffices` | Active Field Office locations, difficulty, open/closed status | Every 45s |
+| `/api/doodles` | Available doodles for purchase with trait ratings | Daily @ 00:00 UTC |
+| `/api/sillymeter` | Silly Meter team scores and global progress | Every 45s |
+| `/api/invasions` | Active cog invasions by department | Every 45s |
 
 ---
 
@@ -219,9 +219,10 @@ See **`DEPLOY.md`** for detailed step-by-step instructions, invite URLs, and tro
 ## Version History
 
 **V Alpha 0.5.0** — Current release (Closed Alpha).
-- **`#suit-calc` static channel** — 4 pinned embeds (one per faction) showing the full promotion point tables for every cog suit level (1–20), including 2.0 variants. Posted/edited on startup and `/pdrefresh`; not on the 120-second loop.
+- **Dual refresh schedule:** `#tt-info` updates every 45 seconds; `#tt-doodles` updates daily at 00:00 UTC.
+- **`#suit-calc` static channel** — 4 pinned embeds (one per faction) showing the full promotion point tables for every cog suit level (1–20), including 2.0 variants. Posted/edited on startup and `/pdrefresh`; not on the 45-second loop.
 - `/pdsetup` now creates `#suit-calc` alongside `#tt-info` and `#tt-doodles`.
-- `/pdrefresh` now also refreshes the suit-calc embeds.
+- `/pdrefresh` now also refreshes the suit-calc embeds and can force doodle updates regardless of time.
 - `/pdboot` command — removes channels and has bot leave the guild.
 - `/beanfest` command — community event schedule for Goofy's Speedway.
 - Hierarchical logging for thread operations (suit calculator messages added/removed/updated per faction).
