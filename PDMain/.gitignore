@@ -1,0 +1,16 @@
+# Secrets — never commit a populated .env. Use .env.example as the
+# shared template instead.
+.env
+
+# Local runtime state — channel + message IDs the bot has created.
+# Each install regenerates this on first /ttr_setup.
+state.json
+
+# Python build / cache artifacts.
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/

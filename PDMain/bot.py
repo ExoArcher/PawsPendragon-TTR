@@ -1,0 +1,1536 @@
+# -*- coding: utf-8 -*-
+"""TTR Discord bot -- multi-guild live feeds for the public TTR APIs.
+
+How it works
+------------
+1. The bot is invited to one or more Discord servers. Only servers
+   whose ID is in the *effective* allowlist (env ``GUILD_ALLOWLIST``
+   + runtime allowlist persisted in ``state.json``) are accepted; the
+   bot leaves any other guild that tries to add it, DMing the owner
+   with instructions to request access from ExoArcher.
+2. In each allowed guild, an admin runs **``/pdsetup``** once. That
+   command finds-or-creates the ``PendragonTTR`` category plus a
+   ``#tt-info``, ``#tt-doodles``, and ``#suit-calc`` channel,
+   posts placeholder messages in each, and stores the message IDs in
+   ``state.json``.
+3. A background task runs every ``$REFRESH_INTERVAL`` seconds, fetches
+   the TTR APIs ONCE, and edits each tracked guild's messages in place.
+   Doodle embeds are only updated every 12 hours (or on /pdrefresh).
+4. A separate sweep task runs every 15 minutes removing stale bot messages.
+
+Slash commands (all users)
+--------------------------
+``/ttrinfo``      -- DM current district/invasion/sillymeter info. Works as a User App.
+``/doodleinfo``   -- DM the full doodle list with ratings. Works as a User App.
+``/helpme``       -- DM the list of available bot commands.
+``/invite``       -- DM the links to add the bot to a server or personal account.
+``/pdrefresh``   -- Force an immediate refresh and sweep old messages.
+``/calculate``    -- Calculate remaining suit points and get optimised activity plans.
+
+Slash commands (Manage Channels + Manage Messages)
+---------------------------------------------------
+``/pdsetup``     -- Create channels and start tracking this guild.
+``/pdteardown``  -- Stop tracking this guild (channels are NOT deleted).
+
+Console commands
+----------------
+``announce <text>`` -- Broadcast a message to every tracked guild (auto-deletes in 30 min).
+``maintenance``     -- Toggle maintenance mode banner in all tracked guild channels.
+``stop``            -- Notify all servers of shutdown, then exit.
+``restart``         -- Notify all servers, then hot-restart the process.
+
+Panel announcements
+-------------------
+Create ``panel_announce.txt`` in the File Manager. The bot picks it up
+within 90 seconds, broadcasts it to every tracked guild, and deletes it.
+"""
+from __future__ import annotations
+
+# ---------------------------------------------------------------------------
+# Self-update from GitHub -- runs before anything else.
+# Initialises the repo on first boot (works even with files already present);
+# pulls on every subsequent boot and restarts if new code was downloaded.
+# ---------------------------------------------------------------------------
+import os as _os
+import subprocess as _subprocess
+import sys as _sys
+
+_BOT_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path.insert(0, _BOT_DIR)
+_GIT_REPO = "https://github.com/ExoArcher/PawsPendragon-TTR"
+
+def _find_repo_dir(start: str) -> str:
+    """Find the nearest git checkout at or above *start*."""
+    current = _os.path.abspath(start)
+    while True:
+        if _os.path.isdir(_os.path.join(current, ".git")):
+            return current
+        parent = _os.path.dirname(current)
+        if parent == current:
+            return start
+        current = parent
+
+_REPO_DIR = _find_repo_dir(_BOT_DIR)
+
+def _clear_bytecode_cache(_path: str) -> None:
+    """Recursively delete all __pycache__ directories to force bytecode recompile."""
+    try:
+        for _root, _dirs, _files in _os.walk(_path):
+            if "__pycache__" in _dirs:
+                _cache_dir = _os.path.join(_root, "__pycache__")
+                for _f in _os.listdir(_cache_dir):
+                    _os.remove(_os.path.join(_cache_dir, _f))
+                _os.rmdir(_cache_dir)
+    except Exception:
+        pass
+
+# Check AUTO_UPDATE env var (default "true" for backwards compatibility)
+_AUTO_UPDATE = _os.getenv("AUTO_UPDATE", "true").lower() in ("true", "1", "yes")
+
+if _AUTO_UPDATE:
+    try:
+        if not _os.path.isdir(_os.path.join(_REPO_DIR, ".git")):
+            print("[auto-update] No .git found -- initialising repo from GitHub...", flush=True)
+            _subprocess.run(["git", "init"],                                cwd=_REPO_DIR, check=True, capture_output=True)
+            _subprocess.run(["git", "remote", "add", "origin", _GIT_REPO],  cwd=_REPO_DIR, check=True, capture_output=True)
+            _subprocess.run(["git", "fetch", "origin", "main"],              cwd=_REPO_DIR, check=True, capture_output=True)
+            _subprocess.run(["git", "checkout", "-b", "main", "--track", "origin/main"],
+                            cwd=_REPO_DIR, check=True, capture_output=True)
+            print("[auto-update] Repo initialised. Restarting with GitHub code...", flush=True)
+            _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+        else:
+            # Compare local HEAD vs remote to avoid infinite restart loop.
+            _subprocess.run(["git", "fetch", "origin", "main"],
+                            cwd=_REPO_DIR, check=True, capture_output=True)
+            _local  = _subprocess.run(["git", "rev-parse", "HEAD"],
+                                      cwd=_REPO_DIR, capture_output=True, text=True).stdout.strip()
+            _remote = _subprocess.run(["git", "rev-parse", "origin/main"],
+                                      cwd=_REPO_DIR, capture_output=True, text=True).stdout.strip()
+            if _local != _remote:
+                try:
+                    # Use --ff-only to safely merge only if fast-forward is possible
+                    _subprocess.run(["git", "pull", "--ff-only", "origin", "main"],
+                                    cwd=_REPO_DIR, check=True, capture_output=True)
+                except _subprocess.CalledProcessError:
+                    # History diverged; warn and continue with existing code
+                    print(f"[auto-update] WARNING: Cannot fast-forward ({_local[:7]} vs {_remote[:7]}). History may have diverged. Continuing with existing code.", flush=True)
+                else:
+                    # Clear bytecode cache to force recompilation of all modules
+                    _clear_bytecode_cache(_REPO_DIR)
+                    print(f"[auto-update] Updated {_local[:7]} -> {_remote[:7]}. Cleared bytecode cache. Restarting...", flush=True)
+                    _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+            else:
+                print(f"[auto-update] Already up to date ({_local[:7]}).", flush=True)
+    except Exception as _e:
+        print(f"[auto-update] WARNING: git update failed ({_e}). Running existing code.", flush=True)
+else:
+    print("[auto-update] AUTO_UPDATE is disabled. Skipping git update.", flush=True)
+# ---------------------------------------------------------------------------
+
+import asyncio
+import logging
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import discord
+from discord import app_commands
+from discord.ext import tasks
+
+from Features.Core.db import db
+from Features.Core.config.config import Config
+from Features.Core.formatters.formatters import FORMATTERS, format_doodles, format_information, format_sillymeter
+from Features.Core.ttr_api.ttr_api import TTRApiClient
+from Features.Infrastructure import cache_manager, periodic_checks
+from Features.Infrastructure.live_feeds.live_feeds import LiveFeedsFeature
+from Features.Infrastructure.guild_lifecycle.guild_lifecycle import GuildLifecycleManager
+from Features.ServerManagement.console_commands.console_commands import run_console, clear_maintenance_on_startup
+from Features.User.calculate.calculate import register_calculate, build_suit_calculator_embeds, build_faction_thread_embeds
+from Features.User.doodlesearch.doodlesearch import register_doodlesearch, cleanup_doodle_search_threads
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("ttr-bot")
+
+# ── Constants & paths ─────────────────────────────────────────────────────────
+
+STATE_VERSION  = 3
+ANNOUNCE_FILE  = Path(__file__).with_name("panel_announce.txt")
+TEARDOWN_LOG   = Path(__file__).with_name("teardown_log.txt")
+
+ANNOUNCEMENT_TITLE       = "<:Lav:1499503216084390019> Paws Pendragon Dev Notice <:Lav:1499503216084390019>"
+ANNOUNCEMENT_TTL_SECONDS = 30 * 60
+DOODLE_REFRESH_INTERVAL  = 12 * 60 * 60  # 12 hours in seconds
+
+_FACTION_ORDER        = ("sellbot", "cashbot", "lawbot", "bossbot")
+_FACTION_THREAD_NAMES = {
+    "sellbot": "Sellbot Promo Chart",
+    "cashbot": "Cashbot Promo Chart",
+    "lawbot":  "Lawbot Promo Chart",
+    "bossbot": "Bossbot Promo Chart",
+}
+
+# Shown to any guild owner whose server fails the allowlist check.
+CLOSED_ACCESS_MSG = (
+    "Hello! Thank you for your enthusiasm to have me join your community! "
+    "At this time I am only in closed access -- please DM **ExoArcher** on "
+    "Discord (user ID `310233741354336257`) to request access."
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TTRBot
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TTRBot(LiveFeedsFeature, discord.AutoShardedClient):
+    def __init__(self, config: Config) -> None:
+        intents = discord.Intents.default()
+        intents.guilds = True
+        super().__init__(intents=intents)
+
+        self.config = config
+        self.tree   = app_commands.CommandTree(self)
+        self.state: dict[str, Any] = self._empty_state()
+        self.welcomed_users: set[int] = set()
+        self.banned_users: dict[str, dict] = {}
+        self._api: TTRApiClient | None = None
+        self._refresh_lock  = asyncio.Lock()
+        self._state_lock    = asyncio.Lock()
+        # Set by Console 'stop' so close() skips its own duplicate broadcast.
+        self._console_stop_sent: bool = False
+        # Per-user-per-guild cooldown for /pd-refresh: (user_id, guild_id) → last-use timestamp.
+        self._refresh_cooldowns: dict[tuple[int, int] | int, float] = {}
+        self._guild_lifecycle: GuildLifecycleManager | None = None
+
+    # ── STATE MANAGEMENT ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _empty_state() -> dict[str, Any]:
+        return {"_version": STATE_VERSION, "guilds": {}, "allowlist": [], "announcements": []}
+
+    async def _save_state(self) -> None:
+        async with self._state_lock:
+            await db.save_state(self.state)
+
+    def _guilds_block(self) -> dict[str, dict[str, dict[str, Any]]]:
+        return self.state.setdefault("guilds", {})
+
+    def _guild_state(self, guild_id: int) -> dict[str, dict[str, Any]]:
+        return self._guilds_block().setdefault(str(guild_id), {})
+
+    def _state_message_ids(self, guild_id: int, key: str) -> list[int]:
+        entry = self._guild_state(guild_id).get(key, {}) or {}
+        ids = entry.get("message_ids")
+        if isinstance(ids, list) and ids:
+            return [int(i) for i in ids if isinstance(i, (int, str))]
+        legacy = entry.get("message_id")
+        if legacy:
+            return [int(legacy)]
+        return []
+
+    def _set_state(self, guild_id: int, key: str, channel_id: int, message_ids: list[int]) -> None:
+        self._guild_state(guild_id)[key] = {"channel_id": channel_id, "message_ids": message_ids}
+
+    def _runtime_allowlist(self) -> set[int]:
+        return {int(x) for x in self.state.get("allowlist", [])}
+
+    def effective_allowlist(self) -> set[int]:
+        return set(self.config.guild_allowlist) | self._runtime_allowlist()
+
+    def is_guild_allowed(self, guild_id: int) -> bool:
+        return guild_id in self.effective_allowlist()
+
+    def _announcements(self) -> list[dict[str, Any]]:
+        return self.state.setdefault("announcements", [])
+
+    async def _record_announcement(self, guild_id: int, channel_id: int, message_id: int, expires_at: float) -> None:
+        self._announcements().append({
+            "guild_id": int(guild_id), "channel_id": int(channel_id),
+            "message_id": int(message_id), "expires_at": float(expires_at),
+        })
+        await self._save_state()
+
+    # ── LIFECYCLE ─────────────────────────────────────────────────────────────
+
+    async def setup_hook(self) -> None:
+        await db.init_db()
+        await db.migrate_from_json(Path(__file__).parent)
+        self.state = await db.load_state()
+        self.welcomed_users = await db.load_welcomed()
+        print("[DB] Persistence layer loaded", flush=True)
+
+        self._api = TTRApiClient(self.config.user_agent)
+        await self._api.__aenter__()
+        print("[API Client] Loaded successfully", flush=True)
+
+        self._register_commands()
+        # tree.sync() is intentionally NOT called here on every restart.
+        # Calling it on every boot triggers Discord 429 rate limits.
+        # Commands are global and only need to be synced once after changes.
+        # To force a re-sync, run: python sync_commands.py
+        print("[Commands] Registered successfully", flush=True)
+        doodlesearch_cmd = self.tree.get_command("doodlesearch")
+        if doodlesearch_cmd is not None:
+            option_names = ", ".join(param.name for param in doodlesearch_cmd.parameters)
+            print(f"[Commands] /doodlesearch options: {option_names}", flush=True)
+
+        self._guild_lifecycle = GuildLifecycleManager(self, self.config)
+
+    async def close(self) -> None:
+        """Broadcast maintenance notices then shut down cleanly."""
+        log.info("Shutdown signal received -- sending maintenance notices...")
+        if not self._console_stop_sent:
+            try:
+                await asyncio.wait_for(self._broadcast_maintenance(), timeout=15.0)
+            except Exception as exc:
+                log.warning("Maintenance broadcast failed: %s", exc)
+        else:
+            log.info("Console stop already sent maintenance notice -- skipping auto-broadcast.")
+        if self._api is not None:
+            await self._api.__aexit__(None, None, None)
+        await super().close()
+
+    async def on_ready(self) -> None:
+        assert self.user is not None
+        log.info("Logged in as %s (id=%s)", self.user, self.user.id)
+        
+        # Automatically sync commands to Discord on startup
+        try:
+            synced = await self.tree.sync()
+            log.info("Synced %d global commands on startup.", len(synced))
+            doodlesearch_cmd = self.tree.get_command("doodlesearch")
+            if doodlesearch_cmd is not None:
+                option_names = ", ".join(param.name for param in doodlesearch_cmd.parameters)
+                log.info("/doodlesearch synced options: %s", option_names)
+        except Exception as e:
+            log.error("Failed to sync commands: %s", e)
+
+        log.info(
+            "In %d guild(s); env-allowlist=%d; runtime-allowlist=%d; admins=%d",
+            len(self.guilds), len(self.config.guild_allowlist),
+            len(self._runtime_allowlist()), len(self.config.admin_ids),
+        )
+        log.info("Bot-admin IDs: %s", ", ".join(str(i) for i in sorted(self.config.admin_ids)))
+
+        # Validate formatters config (Phase 1 check for env-var divergence)
+        from Features.Core.formatters.formatters import validate_config
+        validate_config()
+
+        await self._guild_lifecycle.on_ready()
+
+        await self._cleanup_maintenance_msgs()
+        print("[Maintenance Cleanup] Loaded successfully", flush=True)
+        await clear_maintenance_on_startup(self)
+        asyncio.create_task(run_console(self), name="console-listener")
+        print("[Console Listener] Loaded successfully", flush=True)
+        await self._cleanup_announcements_on_startup()
+        print("[Announcement Cleanup] Loaded successfully", flush=True)
+        await self._refresh_suit_calculator_all_guilds()
+        print("[Suit Calculator] Loaded successfully", flush=True)
+        await self._cleanup_and_recreate_threads()
+        print("[Thread Cleanup & Recreation] Loaded successfully", flush=True)
+        for _guild in self.guilds:
+            if self.is_guild_allowed(_guild.id):
+                await cleanup_doodle_search_threads(self, _guild)
+        print("[Doodle Search Cleanup] Loaded successfully", flush=True)
+        await self._save_state()
+
+        await self._validate_message_ids()
+        print("[Message ID Validation] Completed successfully", flush=True)
+
+        await cache_manager.load_caches_from_db()
+        print("[Cache Manager] Loaded successfully", flush=True)
+        await periodic_checks.start_periodic_checks(self)
+        print("[Periodic Checks] Loaded successfully", flush=True)
+
+        if not self._refresh_loop.is_running():
+            self._refresh_loop.change_interval(seconds=self.config.refresh_interval)
+            self._refresh_loop.start()
+        print("[Live Feed Loop] Loaded successfully", flush=True)
+        if not self._sweep_loop.is_running():
+            self._sweep_loop.start()
+        print("[Sweep Loop] Loaded successfully", flush=True)
+
+        asyncio.create_task(self._audit_log_cleanup_loop(), name="audit-log-cleanup")
+        print("[Audit Log Cleanup] Task started", flush=True)
+
+        guild_count = len([g for g in self.guilds if self.is_guild_allowed(g.id)])
+        print(f"Paws Pendragon TTR is online in {guild_count} server(s).", flush=True)
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        await self._guild_lifecycle.on_guild_join(guild)
+
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        await self._guild_lifecycle.on_guild_remove(guild)
+
+    # ── TEARDOWN ──────────────────────────────────────────────────────────────
+
+    async def _run_teardown(
+        self,
+        guild: discord.Guild,
+        invoker: discord.abc.User,
+    ) -> None:
+        """Full teardown: delete threads → messages → channels → category → clean state → DM.
+
+        Order of operations:
+        1. Delete faction threads inside #suit-calc
+        2. Delete all bot-tracked messages in tracked channels
+        3. Delete tracked text channels
+        4. Delete the PendragonTTR category (if empty after step 3)
+        5. Clear guild from state and persist
+        6. Log to teardown_log.txt
+        7. DM invoker and server owner
+        """
+        guild_state = self._guilds_block().get(str(guild.id), {})
+
+        # ── Step 1: Delete faction threads ────────────────────────────────
+        suit_threads = guild_state.get("suit_threads", {})
+        for faction_key, entry in suit_threads.items():
+            if not isinstance(entry, dict):
+                continue
+            thread_id = int(entry.get("thread_id", 0))
+            if not thread_id:
+                continue
+            thread = guild.get_thread(thread_id)
+            if thread is None:
+                try:
+                    thread = await guild.fetch_channel(thread_id)  # type: ignore[assignment]
+                except (discord.NotFound, discord.HTTPException):
+                    thread = None
+            if thread is not None:
+                try:
+                    await thread.delete()
+                    log.info("[teardown] Deleted thread %s in %s", thread_id, guild.id)
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    log.warning("[teardown] Could not delete thread %s: %s", thread_id, e)
+
+        # ── Step 2 & 3: Delete messages then channels ──────────────────────
+        channel_keys = {
+            "suit_calculator": guild_state.get("suit_calculator", {}),
+            **{k: v for k, v in guild_state.items() if k not in ("suit_calculator", "suit_threads")},
+        }
+
+        deleted_channel_ids: set[int] = set()
+        for key, entry in channel_keys.items():
+            if not isinstance(entry, dict):
+                continue
+            channel_id = int(entry.get("channel_id", 0))
+            if not channel_id:
+                continue
+            channel = guild.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await guild.fetch_channel(channel_id)
+                except (discord.NotFound, discord.HTTPException):
+                    continue
+
+            # Delete stored messages first
+            msg_ids: list[int] = []
+            raw = entry.get("message_ids", [])
+            if isinstance(raw, list):
+                msg_ids = [int(m) for m in raw if m]
+
+            for mid in msg_ids:
+                try:
+                    msg = await channel.fetch_message(mid)  # type: ignore[union-attr]
+                    await msg.delete()
+                    log.info("[teardown] Deleted message %s in #%s", mid, channel.name)  # type: ignore[union-attr]
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                    log.debug("[teardown] Could not delete message %s: %s", mid, e)
+
+            # Delete the channel
+            try:
+                await channel.delete(reason="pdteardown: Pendragon cleanup")  # type: ignore[union-attr]
+                deleted_channel_ids.add(channel_id)
+                log.info("[teardown] Deleted channel %s in %s", channel_id, guild.id)
+            except (discord.Forbidden, discord.HTTPException) as e:
+                log.warning("[teardown] Could not delete channel %s: %s", channel_id, e)
+
+        # ── Step 4: Delete category if now empty ──────────────────────────
+        category = discord.utils.get(guild.categories, name=self.config.category_name)
+        if category is not None:
+            # Only delete if all remaining channels were ours (or none remain)
+            remaining = [c for c in category.channels if c.id not in deleted_channel_ids]
+            if not remaining:
+                try:
+                    await category.delete(reason="pdteardown: Pendragon cleanup")
+                    log.info("[teardown] Deleted category %r in %s", self.config.category_name, guild.id)
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    log.warning("[teardown] Could not delete category: %s", e)
+            else:
+                log.info("[teardown] Category not deleted — %d channel(s) still inside.", len(remaining))
+
+        # ── Step 5: Clear state ───────────────────────────────────────────
+        self._guilds_block().pop(str(guild.id), None)
+        await self._save_state()
+
+        # ── Step 6: Log ───────────────────────────────────────────────────
+        if hasattr(self, "_log_teardown"):
+            await self._log_teardown(guild, invoker)
+
+        # ── Step 7: DM invoker and server owner ──────────────────────────
+        pendragon_emoji = self.config.pendragon_emoji
+        dm_msg = (
+            f"Pawz Pendragon has finished tearing down in **{guild.name}**. "
+            f"To resume usage, run `/pdsetup` — {pendragon_emoji}"
+        )
+
+        # DM invoker
+        try:
+            await invoker.send(dm_msg)
+        except discord.Forbidden:
+            log.debug("[teardown] Could not DM invoker %s", invoker.id)
+
+        # DM owner (only if different from invoker)
+        if guild.owner_id and guild.owner_id != invoker.id:
+            try:
+                owner = guild.owner or await guild.fetch_member(guild.owner_id)
+                if owner:
+                    await owner.send(dm_msg)
+            except Exception as e:
+                log.debug("[teardown] Could not DM owner: %s", e)
+
+        log.info("[teardown] Completed for guild %s (%s), invoked by %s", guild.id, guild.name, invoker)
+
+    # ── CHANNEL BOOTSTRAPPING ─────────────────────────────────────────────────
+
+    async def _ensure_channels_for_guild(self, guild: discord.Guild) -> None:
+        category = discord.utils.get(guild.categories, name=self.config.category_name)
+        if category is None:
+            log.info("Creating category %r in %s", self.config.category_name, guild.name)
+            category = await guild.create_category(self.config.category_name)
+        for key, channel_name in self.config.feeds().items():
+            channel = discord.utils.get(guild.text_channels, name=channel_name)
+            if channel is None:
+                log.info("Creating channel #%s in %s", channel_name, guild.name)
+                channel = await guild.create_text_channel(
+                    channel_name, category=category,
+                    topic=f"Live TTR {key} feed -- auto-updated by bot.",
+                )
+            await self._ensure_messages(guild.id, key, channel, at_least=1)
+
+        calc_name = self.config.channel_suit_calculator
+        calc_ch   = discord.utils.get(guild.text_channels, name=calc_name)
+        if calc_ch is None:
+            log.info("Creating channel #%s in %s", calc_name, guild.name)
+            calc_ch = await guild.create_text_channel(
+                calc_name, category=category,
+                topic="Cog suit disguise calculator — use /calculate here.",
+            )
+        await self._ensure_suit_calculator_pin(guild.id, calc_ch)
+        await self._ensure_suit_threads(guild.id, calc_ch)
+        await self._save_state()
+
+    async def _send_placeholder(self, key: str, channel: discord.TextChannel) -> discord.Message:
+        msg = await channel.send(embed=discord.Embed(
+            title=f"Loading {key}...", description="Fetching the latest data from TTR.", color=0x9124F2,
+        ))
+        try:
+            await msg.pin(reason="Live TTR feed pin")
+        except (discord.Forbidden, discord.HTTPException) as e:
+            log.debug("Could not pin in #%s: %s", channel.name, e)
+        return msg
+
+    async def _ensure_messages(
+        self, guild_id: int, key: str, channel: discord.TextChannel, at_least: int,
+    ) -> list[int]:
+        ids = self._state_message_ids(guild_id, key)
+        verified: list[int] = []
+        for mid in ids:
+            try:
+                await channel.fetch_message(mid)
+                verified.append(mid)
+            except discord.NotFound:
+                log.info("Stored message %s for %s/%s is gone.", mid, guild_id, key)
+            except discord.Forbidden:
+                log.warning("No permission to fetch message in #%s", channel.name)
+                verified.append(mid)
+            except discord.HTTPException as e:
+                log.warning("Transient HTTP %s verifying message %s in #%s -- keeping ID.", e.status, mid, channel.name)
+                verified.append(mid)
+        while len(verified) < at_least:
+            msg = await self._send_placeholder(key, channel)
+            verified.append(msg.id)
+        self._set_state(guild_id, key, channel.id, verified)
+        return verified
+
+    # ── SUIT CALCULATOR ───────────────────────────────────────────────────────
+
+    async def _ensure_suit_calculator_pin(
+        self, guild_id: int, channel: discord.TextChannel,
+    ) -> None:
+        """Post (or edit in place) the 4 static info embeds in #suit-calc."""
+        embeds     = build_suit_calculator_embeds()
+        gs         = self._guild_state(guild_id)
+        entry      = gs.get("suit_calculator", {})
+        stored_ids: list[int] = []
+
+        if isinstance(entry, dict):
+            raw_ids = entry.get("message_ids", [])
+            if isinstance(raw_ids, list):
+                stored_ids = [int(i) for i in raw_ids if i]
+
+        verified_ids: list[int] = []
+        added_count = 0
+        removed_count = 0
+        edited_count = 0
+        for i, embed in enumerate(embeds):
+            mid = stored_ids[i] if i < len(stored_ids) else None
+            if mid:
+                try:
+                    msg = await channel.fetch_message(mid)
+                    await msg.edit(embed=embed)
+                    verified_ids.append(msg.id)
+                    edited_count += 1
+                    continue
+                except discord.NotFound:
+                    log.debug("[suit-calc] Embed %d gone for guild %s -- reposting.", i+1, guild_id)
+                    removed_count += 1
+                except discord.HTTPException as exc:
+                    log.warning("[suit-calc] Could not edit embed %d: %s", i+1, exc)
+            try:
+                new_msg = await channel.send(embed=embed)
+                if i == 0:
+                    try:
+                        await new_msg.pin(reason="Suit Calculator -- Paws Pendragon TTR")
+                    except (discord.Forbidden, discord.HTTPException) as exc:
+                        log.debug("[suit-calc] Could not pin: %s", exc)
+                verified_ids.append(new_msg.id)
+                added_count += 1
+            except Exception as exc:
+                log.warning("[suit-calc] Failed to post embed %d in guild %s: %s",
+                            i+1, guild_id, exc)
+
+        if verified_ids:
+            gs["suit_calculator"] = {"channel_id": channel.id, "message_ids": verified_ids}
+
+        guild = self.get_guild(guild_id)
+        guild_name = guild.name if guild else "unknown"
+
+        if added_count or removed_count or edited_count:
+            log.info("[%d][%s][%s][%d][%d][%d][%d]",
+                     guild_id, guild_name, channel.name, channel.id,
+                     added_count, removed_count, edited_count)
+
+    async def _ensure_suit_threads(
+        self, guild_id: int, channel: discord.TextChannel,
+    ) -> dict[str, dict]:
+        """Post or edit the 3 static embeds inside each of the 4 faction threads. Returns thread stats."""
+        gs          = self._guild_state(guild_id)
+        suit_threads: dict = gs.setdefault("suit_threads", {})
+        thread_stats: dict[str, dict] = {}
+
+        guild = channel.guild
+        guild_name = guild.name if guild else "Unknown"
+        channel_name = channel.name
+
+        for faction_key in _FACTION_ORDER:
+            thread_name = _FACTION_THREAD_NAMES[faction_key]
+            embeds      = build_faction_thread_embeds(faction_key)
+            entry       = suit_threads.get(faction_key, {})
+            thread_id   = int(entry.get("thread_id", 0)) if isinstance(entry, dict) else 0
+            msg_ids: list[int] = entry.get("message_ids", []) if isinstance(entry, dict) else []
+
+            # Locate existing thread
+            thread: discord.Thread | None = None
+            if thread_id:
+                thread = channel.guild.get_thread(thread_id)
+                if thread is None:
+                    try:
+                        thread = await channel.guild.fetch_channel(thread_id)  # type: ignore[assignment]
+                    except (discord.NotFound, discord.HTTPException):
+                        thread = None
+
+            if thread is None:
+                for t in channel.threads:
+                    if t.name == thread_name:
+                        thread = t
+                        break
+
+            # Create thread if still missing
+            if thread is None:
+                try:
+                    thread = await channel.create_thread(
+                        name=thread_name,
+                        auto_archive_duration=10080,
+                        type=discord.ChannelType.public_thread,
+                    )
+                    log.debug("[suit-threads] Created thread '%s' guild=%s", thread_name, guild_id)
+                except discord.Forbidden:
+                    log.warning("[suit-threads] No permission to create thread '%s' guild=%s",
+                                thread_name, guild_id)
+                    continue
+                except discord.HTTPException as exc:
+                    log.warning("[suit-threads] Failed to create thread '%s': %s", thread_name, exc)
+                    continue
+
+            # Unarchive if needed so we can post/edit
+            if getattr(thread, "archived", False):
+                try:
+                    await thread.edit(archived=False)
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
+            # Post or edit the 3 embeds
+            verified_ids: list[int] = []
+            msg_add = 0
+            msg_remove = 0
+            msg_update = 0
+            for i, embed in enumerate(embeds):
+                mid = msg_ids[i] if i < len(msg_ids) else None
+                if mid:
+                    try:
+                        msg = await thread.fetch_message(mid)
+                        await msg.edit(embed=embed)
+                        verified_ids.append(msg.id)
+                        msg_update += 1
+                        continue
+                    except discord.NotFound:
+                        msg_remove += 1
+                    except discord.HTTPException as exc:
+                        log.warning("[suit-threads] Could not edit embed %d in '%s': %s",
+                                    i + 1, thread_name, exc)
+                try:
+                    new_msg = await thread.send(embed=embed)
+                    verified_ids.append(new_msg.id)
+                    msg_add += 1
+                except discord.Forbidden:
+                    log.warning("[suit-threads] No send permission in thread '%s' guild=%s",
+                                thread_name, guild_id)
+                    break
+                except discord.HTTPException as exc:
+                    log.warning("[suit-threads] Failed to post embed %d in '%s': %s",
+                                i + 1, thread_name, exc)
+
+            # Lock thread so only the bot can post
+            try:
+                await thread.edit(locked=True, archived=False)
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                log.debug("[suit-threads] Could not lock '%s': %s", thread_name, exc)
+
+            suit_threads[faction_key] = {"thread_id": thread.id, "message_ids": verified_ids}
+
+            thread_stats[faction_key] = {
+                "thread_name": thread_name,
+                "thread_id": thread.id,
+                "msg_add": msg_add,
+                "msg_remove": msg_remove,
+                "msg_update": msg_update,
+            }
+
+            if msg_add or msg_remove or msg_update:
+                log.info("[%s][%s][%s][%d][%d MsgAdd][%d MsgRemove][%d MsgUpdated]",
+                         guild_name, channel_name, thread_name, thread.id, msg_add, msg_remove, msg_update)
+
+        gs["suit_threads"] = suit_threads
+        return thread_stats
+
+    async def _refresh_suit_calculator_all_guilds(self) -> None:
+        """Refresh the suit-calc embeds for every tracked guild."""
+        calc_name = self.config.channel_suit_calculator
+        updated   = 0
+        for guild_id_str in list(self._guilds_block().keys()):
+            try:
+                guild_id = int(guild_id_str)
+            except ValueError:
+                continue
+            if self.get_guild(guild_id) is None:
+                continue
+            gs         = self._guild_state(guild_id)
+            entry      = gs.get("suit_calculator", {})
+            channel_id = int(entry.get("channel_id", 0)) if isinstance(entry, dict) else 0
+            channel    = self.get_channel(channel_id) if channel_id else None
+            if not isinstance(channel, discord.TextChannel):
+                guild   = self.get_guild(guild_id)
+                channel = (
+                    discord.utils.get(guild.text_channels, name=calc_name)
+                    if guild else None
+                )
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            try:
+                await self._ensure_suit_calculator_pin(guild_id, channel)
+                await self._ensure_suit_threads(guild_id, channel)
+                updated += 1
+            except Exception:
+                log.exception("[suit-calc] Refresh failed for guild %s", guild_id)
+        if updated:
+            log.info("[suit-calc] Refreshed embeds for %d guild(s).", updated)
+            await self._save_state()
+
+    async def _cleanup_and_recreate_threads(self) -> None:
+        """Delete all threads in #tt-doodles and #suit-calc, then recreate promo charts."""
+        doodles_name = self.config.channel_doodles
+        calc_name    = self.config.channel_suit_calculator
+        cleaned      = 0
+
+        for guild_id_str in list(self._guilds_block().keys()):
+            try:
+                guild_id = int(guild_id_str)
+            except ValueError:
+                continue
+            guild = self.get_guild(guild_id)
+            if guild is None:
+                continue
+
+            # Clean #tt-doodles threads
+            doodles_ch = discord.utils.get(guild.text_channels, name=doodles_name)
+            if isinstance(doodles_ch, discord.TextChannel):
+                for thread in list(doodles_ch.threads):
+                    try:
+                        await thread.delete()
+                        log.debug("[cleanup-threads] Deleted thread '%s' in #%s", thread.name, doodles_ch.name)
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        log.warning("[cleanup-threads] Could not delete thread in #%s: %s", doodles_ch.name, e)
+
+            # Clean #suit-calc threads and recreate promo charts
+            calc_ch = discord.utils.get(guild.text_channels, name=calc_name)
+            if isinstance(calc_ch, discord.TextChannel):
+                # Delete all threads
+                for thread in list(calc_ch.threads):
+                    try:
+                        await thread.delete()
+                        log.debug("[cleanup-threads] Deleted thread '%s' in #%s", thread.name, calc_ch.name)
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        log.warning("[cleanup-threads] Could not delete thread in #%s: %s", calc_ch.name, e)
+
+                # Recreate promo chart threads
+                try:
+                    await self._ensure_suit_threads(guild_id, calc_ch)
+                    cleaned += 1
+                    log.debug("[cleanup-threads] Recreated suit threads for guild %s", guild_id)
+                except Exception as e:
+                    log.warning("[cleanup-threads] Failed to recreate threads for guild %s: %s", guild_id, e)
+
+        if cleaned:
+            log.info("[cleanup-threads] Cleaned and recreated threads for %d guild(s).", cleaned)
+            await self._save_state()
+
+    # ── STARTUP MESSAGE ID VALIDATION ────────────────────────────────────────
+
+    async def _validate_message_ids(self) -> None:
+        """Verify stored message IDs still exist in Discord. Clear stale ones on startup.
+
+        Called once in on_ready after state is loaded. For each tracked message ID,
+        attempts channel.fetch_message(). If 404 (NotFound), clears the ID from
+        in-memory state so the next refresh sends a fresh message instead of
+        scan-and-fail looping.
+        """
+        cleared = 0
+        for guild_id_str, guild_data in list(self._guilds_block().items()):
+            for feed_key, entry in list(guild_data.items()):
+                if not isinstance(entry, dict):
+                    continue
+                ch_id = int(entry.get("channel_id", 0))
+                if not ch_id:
+                    continue
+                channel = self.get_channel(ch_id)
+                if not isinstance(channel, discord.TextChannel):
+                    continue
+                valid_ids: list[int] = []
+                for mid in entry.get("message_ids", []):
+                    try:
+                        await channel.fetch_message(int(mid))
+                        valid_ids.append(int(mid))
+                    except discord.NotFound:
+                        log.info(
+                            "[startup] Cleared stale message ID %d from %s/%s",
+                            mid, guild_id_str, feed_key,
+                        )
+                        cleared += 1
+                    except (discord.Forbidden, discord.HTTPException):
+                        # Can't check — keep the ID; next refresh will handle it
+                        valid_ids.append(int(mid))
+                entry["message_ids"] = valid_ids
+        if cleared:
+            log.info("[startup] Cleared %d stale message ID(s); will re-post on next refresh", cleared)
+            await self._save_state()
+
+    async def _audit_log_cleanup_loop(self) -> None:
+        """Daily background task: delete audit log entries older than retention period."""
+        retention_days = int(_os.getenv("AUDIT_LOG_RETENTION_DAYS", "90"))
+        while True:
+            await asyncio.sleep(24 * 60 * 60)  # Sleep first; cleanup not urgent at startup
+            try:
+                deleted = await db.cleanup_audit_log(days=retention_days)
+                log.info("[audit-cleanup] Deleted %d old audit log entries", deleted)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("[audit-cleanup] Audit log cleanup failed")
+
+    # ── STALE MESSAGE SWEEP ───────────────────────────────────────────────────
+
+    def _channel_keep_ids(self, guild_id: int, channel_id: int) -> set[int]:
+        """Return the set of message IDs the bot should NOT delete in *channel_id*."""
+        keep: set[int] = set()
+        for entry in self._guild_state(guild_id).values():
+            if not isinstance(entry, dict):
+                continue
+            if int(entry.get("channel_id", 0)) != channel_id:
+                continue
+            for mid in entry.get("message_ids", []) or []:
+                try:
+                    keep.add(int(mid))
+                except (TypeError, ValueError):
+                    pass
+
+        # Protect suit-thread starter messages in #suit-calc
+        suit_calc = self._guild_state(guild_id).get("suit_calculator", {})
+        if isinstance(suit_calc, dict) and int(suit_calc.get("channel_id", 0)) == channel_id:
+            suit_threads = self._guild_state(guild_id).get("suit_threads", {})
+            if isinstance(suit_threads, dict):
+                for faction_data in suit_threads.values():
+                    if isinstance(faction_data, dict):
+                        tid = faction_data.get("thread_id")
+                        if tid:
+                            try:
+                                keep.add(int(tid))
+                            except (TypeError, ValueError):
+                                pass
+
+        for record in self._announcements():
+            if int(record.get("channel_id", 0)) == channel_id:
+                try:
+                    keep.add(int(record.get("message_id", 0)))
+                except (TypeError, ValueError):
+                    pass
+        return keep
+
+    async def _sweep_channel_stale(
+        self, channel: discord.TextChannel, *, keep_ids: set[int], history_limit: int = 200,
+    ) -> int:
+        if self.user is None:
+            return 0
+        bot_id  = self.user.id
+        deleted = 0
+        try:
+            async for msg in channel.history(limit=history_limit):
+                if msg.author.id != bot_id or msg.id in keep_ids:
+                    continue
+                try:
+                    await msg.delete()
+                    deleted += 1
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+        except discord.Forbidden:
+            log.debug("No Read Message History in #%s; skipping sweep", channel.name)
+        return deleted
+
+    async def _sweep_guild_stale(self, guild_id: int) -> int:
+        total = 0
+        seen: set[int] = set()
+        for entry in self._guild_state(guild_id).values():
+            channel_id = int(entry.get("channel_id", 0))
+            if channel_id in seen or channel_id == 0:
+                continue
+            seen.add(channel_id)
+            channel = self.get_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            total += await self._sweep_channel_stale(channel, keep_ids=self._channel_keep_ids(guild_id, channel_id))
+        return total
+
+    @tasks.loop(minutes=15)
+    async def _sweep_loop(self) -> None:
+        """Sweep stale bot messages from all tracked channels every 15 minutes."""
+        for guild_id_str in list(self._guilds_block().keys()):
+            try:
+                guild_id = int(guild_id_str)
+            except ValueError:
+                continue
+            if not self.is_guild_allowed(guild_id) or self.get_guild(guild_id) is None:
+                continue
+            try:
+                swept = await self._sweep_guild_stale(guild_id)
+                if swept:
+                    log.info("Periodic sweep: removed %d stale message(s) in guild %s", swept, guild_id)
+            except Exception:
+                log.exception("Periodic sweep failed for guild %s", guild_id)
+
+    @_sweep_loop.before_loop
+    async def _before_sweep_loop(self) -> None:
+        await self.wait_until_ready()
+
+    # ── ANNOUNCEMENTS ─────────────────────────────────────────────────────────
+
+    async def _cleanup_announcements_on_startup(self) -> None:
+        cleared = 0
+        failed  = 0
+
+        stale_records = list(self._announcements())
+        if stale_records:
+            log.info("Startup cleanup: found %d tracked announcement(s) to clear.", len(stale_records))
+        for record in stale_records:
+            try:
+                await self._delete_announcement_record(record)
+                cleared += 1
+            except Exception:
+                failed += 1
+
+        for guild_id_str, gs in list(self._guilds_block().items()):
+            try:
+                guild_id = int(guild_id_str)
+            except ValueError:
+                continue
+            info = gs.get("information")
+            if not info:
+                continue
+            channel = self.get_channel(int(info.get("channel_id", 0)))
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            try:
+                async for msg in channel.history(limit=100):
+                    if msg.author.id != (self.user.id if self.user else 0):
+                        continue
+                    if msg.embeds and ANNOUNCEMENT_TITLE in (msg.embeds[0].title or ""):
+                        try:
+                            await msg.delete()
+                            log.info("Startup cleanup: deleted orphan announcement %s in guild %s", msg.id, guild_id)
+                            cleared += 1
+                        except (discord.Forbidden, discord.NotFound) as e:
+                            log.warning("Startup cleanup: could not delete orphan %s: %s", msg.id, e)
+                            failed += 1
+            except Exception:
+                log.exception("Startup cleanup: orphan scan failed in %s/#%s", guild_id, getattr(channel, "name", "?"))
+
+        if cleared == 0 and failed == 0:
+            log.info("Startup cleanup: no stale messages found -- channels are clean.")
+        elif failed == 0:
+            log.info("Startup cleanup: cleared %d stale message(s) successfully.", cleared)
+        else:
+            log.warning(
+                "Startup cleanup: cleared %d message(s), but %d could not be deleted (check permissions).",
+                cleared, failed,
+            )
+
+    # ── MAINTENANCE ───────────────────────────────────────────────────────────
+
+    async def _broadcast_maintenance(self) -> None:
+        """Send a maintenance embed to every tracked guild info channel."""
+        embed = discord.Embed(
+            title=":wrench: Temporary Maintenance",
+            description=(
+                "The bot is going down for temporary maintenance. "
+                "Please check [toonhq.org](https://toonhq.org) in the "
+                "meantime for your toony needs!"
+            ),
+            color=0x9124F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        maintenance_ids: dict[str, int] = {}
+        for guild_id_str, gs in list(self._guilds_block().items()):
+            info_entry = gs.get("information")
+            if not info_entry:
+                continue
+            channel = self.get_channel(int(info_entry["channel_id"]))
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            try:
+                msg = await channel.send(embed=embed)
+                maintenance_ids[guild_id_str] = msg.id
+                log.info("Sent maintenance notice to guild %s", guild_id_str)
+            except Exception as exc:
+                log.warning("Could not send maintenance notice to %s: %s", guild_id_str, exc)
+        if maintenance_ids:
+            self.state["maintenance_msgs"] = maintenance_ids
+            await self._save_state()
+
+    async def _cleanup_maintenance_msgs(self) -> None:
+        """Delete maintenance messages left from the previous shutdown."""
+        maintenance_ids: dict[str, int] = self.state.pop("maintenance_msgs", {})
+        if not maintenance_ids:
+            return
+        cleaned = 0
+        for guild_id_str, msg_id in maintenance_ids.items():
+            gs         = self._guilds_block().get(guild_id_str, {})
+            info_entry = gs.get("information")
+            if not info_entry:
+                continue
+            channel = self.get_channel(int(info_entry["channel_id"]))
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            try:
+                msg = await channel.fetch_message(msg_id)
+                await msg.delete()
+                cleaned += 1
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+        await self._save_state()
+        if cleaned:
+            log.info("Startup cleanup: removed %d maintenance notice(s).", cleaned)
+
+    # ── USER SYSTEM ───────────────────────────────────────────────────────────
+
+    async def _maybe_welcome(self, user: discord.abc.User) -> None:
+        """Send a one-time welcome DM the first time a user uses the bot."""
+        if user.id in self.welcomed_users:
+            return
+        msg = (
+            "**Thanks for installing Paws Pendragon TTR!** :duck:\n\n"
+            ":warning: *This bot is currently in Early Access -- features are still "
+            "being added and things may change.*\n\n"
+            "**Available Commands:**\n"
+            "`/ttrinfo` -- Get the current Toontown district populations, cog invasions, "
+            "field offices, and Silly Meter status sent directly to your DMs.\n\n"
+            "`/doodleinfo` -- Get the full Toontown doodle list with trait ratings and a "
+            "buying guide sent directly to your DMs."
+        )
+        try:
+            await user.send(msg)
+            self.welcomed_users.add(user.id)
+            await db.add_welcomed(user.id)
+            log.info("Sent welcome DM to user %s (id=%s)", user, user.id)
+        except discord.Forbidden:
+            pass  # DMs closed, skip silently
+
+    async def _is_banned(self, user_id: int) -> dict | None:
+        """Return the ban record if the user is banned, else None."""
+        return await db.get_ban(user_id)
+
+    async def _reject_if_banned(self, interaction: discord.Interaction) -> bool:
+        """Send an ephemeral rejection and return True if the user is banned."""
+        record = await self._is_banned(interaction.user.id)
+        if record is None:
+            return False
+        reason    = record.get("reason") or "No reason given."
+        banned_at = record.get("banned_at", "unknown date")
+        msg = (
+            ":no_entry: **You have been banned from using Paws Pendragon TTR.**\n\n"
+            f"**Reason:** {reason}\n"
+            f"**Date:** {banned_at}\n\n"
+            "If you believe this is a mistake, contact the bot owner."
+        )
+        try:
+            await interaction.response.send_message(msg, ephemeral=True)
+        except discord.InteractionResponded:
+            await interaction.followup.send(msg, ephemeral=True)
+        log.info(
+            "Blocked banned user %s (id=%s) from %s",
+            interaction.user, interaction.user.id,
+            interaction.command and interaction.command.name,
+        )
+        return True
+
+    # ── SLASH COMMANDS ────────────────────────────────────────────────────────
+
+    def _register_commands(self) -> None:
+
+        # ── /ttrinfo  (all users, guild + user install) ────────────────────
+        @self.tree.command(
+            name="ttrinfo",
+            description="[User Command] See current Toontown district, invasion, field office, and Silly Meter info.",
+        )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def ttrinfo(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._maybe_welcome(interaction.user)
+            if self._api is None:
+                await interaction.followup.send("API client not ready yet -- try again in a moment.", ephemeral=True)
+                return
+            results = await asyncio.gather(
+                self._api.fetch("invasions"),
+                self._api.fetch("population"),
+                self._api.fetch("fieldoffices"),
+                self._api.fetch("sillymeter"),
+                return_exceptions=True,
+            )
+            invasions    = None if isinstance(results[0], BaseException) else results[0]
+            population   = None if isinstance(results[1], BaseException) else results[1]
+            fieldoffices = None if isinstance(results[2], BaseException) else results[2]
+            sillymeter   = None if isinstance(results[3], BaseException) else results[3]
+
+            info_embeds = format_information(invasions=invasions, population=population, fieldoffices=fieldoffices)
+            silly_embed = format_sillymeter(sillymeter)
+            try:
+                for embed in info_embeds:
+                    await interaction.user.send(embed=embed)
+                await interaction.user.send(embed=silly_embed)
+                await interaction.followup.send("Check your DMs! 📬", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "I couldn't DM you -- please enable DMs from server members and try again.",
+                    ephemeral=True,
+                )
+
+        # ── /doodleinfo  (all users, guild + user install) ─────────────────
+        @self.tree.command(
+            name="doodleinfo",
+            description="[User Command] See the current Toontown doodle list with trait ratings.",
+        )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def doodleinfo(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._maybe_welcome(interaction.user)
+            if self._api is None:
+                await interaction.followup.send("API client not ready yet -- try again in a moment.", ephemeral=True)
+                return
+            doodle_data = await self._api.fetch("doodles")
+            embeds = format_doodles(doodle_data)
+            try:
+                await interaction.user.send(embeds=embeds)
+                await interaction.followup.send("Check your DMs! 📬", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "I couldn't DM you -- please enable DMs from server members and try again.",
+                    ephemeral=True,
+                )
+
+        # ── /helpme  (all users, guild + user install) ────────────────────
+        @self.tree.command(
+            name="helpme",
+            description="[User Command] Show available commands for the Paws Pendragon app.",
+        )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def help_me(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
+            embed = discord.Embed(
+                title="Paws Pendragon TTR — Commands",
+                description=(
+                    ":warning: *This bot is currently in Early Access — features are still "
+                    "being added and things may change.*"
+                ),
+                color=0x9124F2,
+            )
+            embed.add_field(
+                name="/ttrinfo",
+                value="Current district populations, cog invasions, field offices, and Silly Meter status — sent to your DMs.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/doodleinfo",
+                value="Current doodle list with trait ratings and a buying guide — sent to your DMs.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/calculate",
+                value="Cog suit merit/stock options/jury notices calculator — interactive dropdown flow.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/beanfest",
+                value="Weekly Beanfest event schedule — sent to your DMs.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/invite",
+                value="Get links to add the bot to a server or your personal account.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/helpme",
+                value="Show this message.",
+                inline=False,
+            )
+            try:
+                await interaction.user.send(embed=embed)
+                await interaction.response.send_message("Check your DMs! 📬", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # ── /invite  (all users) ──────────────────────────────────────────
+        @self.tree.command(name="invite", description="Get links to invite Paws Pendragon")
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def invite(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
+            bot_id = self.user.id if self.user else "1496971496709689654"
+            server_link = (
+                f"https://discord.com/oauth2/authorize"
+                f"?client_id={bot_id}"
+                f"&permissions=7318489585232976"
+                f"&scope=bot+applications.commands"
+            )
+            user_app_link = (
+                f"https://discord.com/oauth2/authorize"
+                f"?client_id={bot_id}"
+                f"&integration_type=1"
+                f"&scope=applications.commands"
+            )
+            embed = discord.Embed(title="🐾 Invite Paws Pendragon", color=0x9124F2)
+            embed.add_field(
+                name="Add to Server",
+                value=f"[Click here to invite]({server_link})",
+                inline=False,
+            )
+            embed.add_field(
+                name="Add as User App",
+                value=f"[Click here to install]({user_app_link})",
+                inline=False,
+            )
+            try:
+                await interaction.user.send(embed=embed)
+                await interaction.response.send_message("Check your DMs!", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # ── /beanfest  (all users, guild + user install) ─────────────────
+        @self.tree.command(
+            name="beanfest",
+            description="[User Command] View the weekly Beanfest schedule. Events are community-run and subject to change.",
+        )
+        @app_commands.allowed_installs(guilds=True, users=True)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+        async def beanfest(interaction: discord.Interaction) -> None:
+            if await self._reject_if_banned(interaction):
+                return
+            embed = discord.Embed(
+                title="Beanfest Schedule",
+                description=(
+                    "These are **community-run** events and schedules are subject to change. "
+                    "Always check with the hosting guild for the latest info."
+                ),
+                color=0x9124F2,
+            )
+            embed.add_field(
+                name="Wednesday",
+                value="Adult ToonTown Addicts\nKaboom Cliffs · 8pm TTT / 11pm ET",
+                inline=False,
+            )
+            embed.add_field(
+                name="Friday",
+                value="Adult ToonTown Addicts\nKaboom Cliffs · 4pm TTT / 7pm ET",
+                inline=False,
+            )
+            embed.add_field(
+                name="Saturday",
+                value="Cold Callers Guild\nHiccup Hills · 12pm TTT / 3pm ET",
+                inline=False,
+            )
+            embed.add_field(
+                name="Sunday",
+                value="Adult ToonTown Addicts\nKaboom Cliffs · 10am TTT / 1pm ET",
+                inline=False,
+            )
+            embed.set_footer(text="Location: Goofy's Speedway")
+            try:
+                await interaction.user.send(embed=embed)
+                await interaction.response.send_message("Check your DMs! 📬", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # ── /pdsetup  (bot-admins / guild managers only) ────────────────
+        @self.tree.command(
+            name="pdsetup",
+            description="[Server Admin Command] Create the TTR feed channels in this server and start tracking them.",
+        )
+        @app_commands.default_permissions(manage_channels=True, manage_messages=True)
+        @app_commands.guild_only()
+        async def pdsetup(interaction: discord.Interaction) -> None:
+            guild = interaction.guild
+            if guild is None:
+                await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+                return
+            if not self.is_guild_allowed(guild.id):
+                await interaction.response.send_message(
+                    f"This server isn't on the allowlist. Contact the bot owner to add `{guild.id}`.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            swept = 0
+            try:
+                await self._ensure_channels_for_guild(guild)
+                api_data = await self._fetch_all()
+                for feed_key in self.config.feeds():
+                    try:
+                        await self._update_feed(guild.id, feed_key, api_data)
+                    except Exception:
+                        log.exception("Initial refresh failed for %s/%s", guild.id, feed_key)
+                swept = await self._sweep_guild_stale(guild.id)
+                if swept:
+                    log.info("pd-setup swept %d stale message(s) in %s", swept, guild.id)
+                await self._save_state()
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "I'm missing permissions. Make sure I have **Manage Channels**, "
+                    "**Send Messages**, and **Embed Links**, then try again.",
+                    ephemeral=True,
+                )
+                return
+            channels_msg = ", ".join(f"#{n}" for n in self.config.feeds().values())
+            tail = f" Cleaned up {swept} old message(s)." if swept else ""
+            await interaction.followup.send(
+                f"All set! Tracking **{channels_msg}** and `#{self.config.channel_suit_calculator}`. "
+                f"Refreshes every {self.config.refresh_interval}s.{tail}",
+                ephemeral=True,
+            )
+
+        # ── /pdrefresh  (bot-admins / guild managers only) ──────────────
+        _REFRESH_COOLDOWN = 600  # 10 minutes in seconds
+
+        @self.tree.command(
+            name="pdrefresh",
+            description="[User Command] Force an immediate refresh of TTR feeds in this server.",
+        )
+        @app_commands.guild_only()
+        async def pdrefresh(interaction: discord.Interaction) -> None:
+            guild = interaction.guild
+            if guild is None:
+                await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+                return
+
+            # Check manage_messages permission to bypass cooldown.
+            member = interaction.user
+            can_bypass = (
+                isinstance(member, discord.Member)
+                and member.guild_permissions.manage_messages
+            )
+
+            if not can_bypass:
+                cooldown_key = (member.id, guild.id)
+                last_used = self._refresh_cooldowns.get(cooldown_key, 0.0)
+                remaining = _REFRESH_COOLDOWN - (time.time() - last_used)
+                if remaining > 0:
+                    mins, secs = divmod(int(remaining), 60)
+                    wait = f"{mins}m {secs}s" if mins else f"{secs}s"
+                    await interaction.response.send_message(
+                        f"You can use `/pd-refresh` again in **{wait}**.",
+                        ephemeral=True,
+                    )
+                    return
+
+            await interaction.response.defer(ephemeral=True, thinking=True)
+
+            if not can_bypass:
+                self._refresh_cooldowns[cooldown_key] = time.time()
+
+            async with self._refresh_lock:
+                api_data = await self._fetch_all()
+                try:
+                    await self._update_feed(guild.id, "information", api_data)
+                except Exception:
+                    log.exception("Feed refresh failed for guild %s", guild.id)
+
+            swept = 0
+            try:
+                swept = await self._sweep_guild_stale(guild.id)
+            except Exception:
+                log.exception("Sweep failed for %s", guild.id)
+            if swept:
+                await self._save_state()
+
+            tail = f" Cleaned up {swept} old message(s)." if swept else ""
+            await interaction.followup.send(f"Refreshed.{tail}", ephemeral=True)
+
+        # ── /pdteardown  (bot-admins / guild managers only) ─────────────
+        @self.tree.command(
+            name="pdteardown",
+            description="[Server Admin Command] Remove all Pendragon channels, messages, and category from this server.",
+        )
+        @app_commands.default_permissions(manage_channels=True, manage_messages=True)
+        @app_commands.guild_only()
+        async def pdteardown(interaction: discord.Interaction) -> None:
+            guild = interaction.guild
+            if guild is None:
+                await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._run_teardown(guild, interaction.user)
+            await interaction.followup.send("Teardown complete.", ephemeral=True)
+
+        # ── /pdboot  (bot-admins / guild managers only) ──────────────────
+        @self.tree.command(
+            name="pdboot",
+            description="[Server Admin Command] Remove all Pendragon channels and leave this server.",
+        )
+        @app_commands.default_permissions(manage_channels=True, manage_messages=True)
+        @app_commands.guild_only()
+        async def pdboot(interaction: discord.Interaction) -> None:
+            guild = interaction.guild
+            if guild is None:
+                await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._run_teardown(guild, interaction.user)
+
+            # Build invite link
+            bot_id = self.user.id if self.user else "1496971496709689654"
+            invite_link = (
+                f"https://discord.com/oauth2/authorize"
+                f"?client_id={bot_id}"
+                f"&permissions=7318489585232976"
+                f"&scope=bot+applications.commands"
+            )
+
+            # DM the invoker before leaving
+            try:
+                await interaction.user.send(
+                    f"Pendragon is now leaving. Use this link to invite me back whenever you'd like:\n"
+                    f"{invite_link}"
+                )
+            except discord.Forbidden:
+                pass
+
+            # Send ephemeral confirmation (best-effort — interaction may expire as we leave)
+            try:
+                await interaction.followup.send("Leaving now. Goodbye!", ephemeral=True)
+            except Exception:
+                pass
+
+            log.info("pdboot: leaving guild %s (%s)", guild.id, guild.name)
+            await guild.leave()
+
+        async def self_log_teardown(guild: discord.Guild, invoker: discord.abc.User) -> None:
+            """Append one line to teardown_log.txt for every /pdteardown."""
+            try:
+                owner_id   = guild.owner_id
+                owner_name = "unknown"
+                try:
+                    owner = guild.owner or await guild.fetch_member(owner_id)
+                    owner_name = str(owner)
+                except Exception:
+                    pass
+                ts    = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+                entry = (
+                    f"[{ts}]\n"
+                    f"  Guild ID    : {guild.id}\n"
+                    f"  Server Name : {guild.name}\n"
+                    f"  Owner Name  : {owner_name}\n"
+                    f"  Owner ID    : {owner_id}\n"
+                    f"  Invoked by  : {invoker} (id={invoker.id})\n"
+                    f"{'=' * 48}\n"
+                )
+                with open(TEARDOWN_LOG, "a", encoding="utf-8") as fh:
+                    fh.write(entry)
+                log.info("Teardown logged for guild %s (%s)", guild.id, guild.name)
+            except Exception as exc:
+                log.warning("Could not write teardown log: %s", exc)
+
+        self._log_teardown = self_log_teardown
+
+        # ── /calculate  (all users, guild + user install) ──────────────────
+        register_calculate(self)
+        
+        # ── /doodlesearch (all users) ──────────────────────────────────────
+        register_doodlesearch(self)
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    config = Config.load()
+    if not config.guild_allowlist:
+        log.warning(
+            "GUILD_ALLOWLIST is empty -- the bot cannot join any server. Edit your .env."
+        )
+    bot = TTRBot(config)
+    bot.run(config.token, log_handler=None)
+
+
+if __name__ == "__main__":
+    main()
