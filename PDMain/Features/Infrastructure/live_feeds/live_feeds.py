@@ -77,21 +77,21 @@ class LiveFeedsFeature:
     # ── FEED REFRESH ──────────────────────────────────────────────────────────
 
     async def _fetch_all(self) -> dict[str, dict | None]:
-        """Fetch all 4 enabled TTR endpoints in parallel.
+        """Fetch all 5 enabled TTR endpoints in parallel.
 
         Returns a mapping of feed key to API response (or None on error).
-        Does NOT fetch invasions (per user constraint: no building data).
 
         Note: Doodles are fetched every cycle but the embeds are only
         updated if it's a new UTC day (00:00 UTC boundary).
         """
         if self._api is None:
-            return {"population": None, "fieldoffices": None, "doodles": None, "sillymeter": None}
+            return {"population": None, "fieldoffices": None, "invasions": None, "doodles": None, "sillymeter": None}
 
-        # Fetch the 4 enabled endpoints in parallel
+        # Fetch the 5 enabled endpoints in parallel
         results = await asyncio.gather(
             self._api.fetch("population"),
             self._api.fetch("fieldoffices"),
+            self._api.fetch("invasions"),
             self._api.fetch("doodles"),
             self._api.fetch("sillymeter"),
             return_exceptions=True,
@@ -100,8 +100,9 @@ class LiveFeedsFeature:
         return {
             "population": None if isinstance(results[0], BaseException) else results[0],
             "fieldoffices": None if isinstance(results[1], BaseException) else results[1],
-            "doodles": None if isinstance(results[2], BaseException) else results[2],
-            "sillymeter": None if isinstance(results[3], BaseException) else results[3],
+            "invasions": None if isinstance(results[2], BaseException) else results[2],
+            "doodles": None if isinstance(results[3], BaseException) else results[3],
+            "sillymeter": None if isinstance(results[4], BaseException) else results[4],
         }
 
     def _get_guild_channel(
