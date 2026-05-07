@@ -21,17 +21,17 @@ After an admin runs `/pdsetup`, your server gets:
 
 | Channel | Updates | Content |
 |---------|---------|---------|
-| **`#tt-information`** | Every 90s | District populations, active Field Offices (department/difficulty/annexes/status), global Silly Meter (team scores & progress). |
+| **`#tt-info`** | Every 120s | District populations, active Field Offices (department/difficulty/annexes/status), global Silly Meter (team scores & progress), active cog invasions. |
 | **`#tt-doodles`** | Every 12h | Every doodle for sale, sorted by rarity tier. Trait ratings + buying guide. |
-| **`#suit-calculator`** | On startup + `/pdrefresh` | Full progression tables for all 4 Cog factions + v1.0/v2.0 variants (4 static pinned embeds). |
+| **`#suit-calc`** | On startup + `/pdrefresh` | Full progression tables for all 4 Cog factions + v1.0/v2.0 variants (4 static pinned embeds). |
 
 Clean & efficient: One pinned message per section. In-place edits. Stale messages auto-swept every 15 min.
 
 ### Live Updating Embeds
 
-Every 90 seconds, the bot fetches fresh data from the TTR API and **edits the pinned embeds in-place** with the latest information. No new messages posted — same embed, refreshed content. This keeps channels noise-free and Discord history clean.
+Every 120 seconds, the bot fetches fresh data from the TTR API and **edits the pinned embeds in-place** with the latest information. No new messages posted — same embed, refreshed content. This keeps channels noise-free and Discord history clean.
 
-Doodle embeds update once every 12 hours (unless forced via `/pdrefresh`). Suit calculator embeds don't follow the 90-second loop; they're static and only update on bot startup and `/pdrefresh`.
+Doodle embeds update once every 12 hours (unless forced via `/pdrefresh`). Suit calculator embeds don't follow the 120-second loop; they're static and only update on bot startup and `/pdrefresh`.
 
 ---
 
@@ -82,7 +82,8 @@ Available in servers, DMs, and group chats. Work as both a server bot and a pers
 | `/ttrinfo` | DMs you the current district populations, cog invasions, field offices, and Silly Meter status. |
 | `/doodleinfo` | DMs you the full doodle availability list with trait ratings and a buying guide. |
 | `/doodlesearch [traits] [playground] [district] [cost]` | Advanced doodle finder. Filter by up to 4 traits (fuzzy-matched, e.g. "Playful"), playground, district, or exact jellybean cost. Returns top 7 ranked results with images in a thread. |
-| `/calculate <suit> <level> <current_points>` | Suit disguise point calculator. Accepts faction names or abbreviations; add `2.0` for 2.0 suits (e.g. `RB2.0`). Returns points needed, activity recommendations with yield ranges, and laff boost milestones. |
+| `/calculate <suit> <level> <current_points>` | Suit disguise point calculator. Accepts faction names or abbreviations; add `2.0` for 2.0 suits (e.g. `SB2.0`). Returns points needed, activity recommendations with yield ranges, and laff boost milestones. |
+| `/beanfest` | Community-run Beanfest event schedule for weekly Goofy's Speedway events. |
 | `/invite` | DMs you the links to add Paws Pendragon TTR to a server or personal account. |
 | `/helpme` | DMs you the full command list. Falls back to ephemeral if DMs are closed. |
 
@@ -91,9 +92,10 @@ Require **Manage Channels** and **Manage Messages**.
 
 | Command | Description |
 |---|---|
-| `/pdsetup` | Create `#tt-information`, `#tt-doodles`, and `#suit-calculator` channels and start live tracking for this server. |
-| `/pdrefresh` | Force an immediate data refresh, update all feed embeds, and sweep stale messages. |
+| `/pdsetup` | Create `#tt-info`, `#tt-doodles`, and `#suit-calc` channels and start live tracking for this server. |
+| `/pdrefresh` | Force an immediate data refresh, update all feed embeds, and sweep stale messages. (10-min cooldown for non-admins) |
 | `/pdteardown` | Stop tracking this server. Channels are kept but no longer updated. Logged to `teardown_log.txt`. |
+| `/pdboot` | Remove all Pendragon channels and have the bot leave this server. (Guild managers only) |
 
 ### Console Commands
 Typed directly into the Cybrancee hosting panel console (stdin).
@@ -144,12 +146,11 @@ The bot consumes 5 public Toontown Rewritten endpoints:
 
 | Endpoint | Data | Update Frequency |
 |----------|------|------------------|
-| `/api/population` | District populations per server | Every 90s |
-| `/api/fieldoffices` | Active Field Office locations, difficulty, open/closed status | Every 90s |
+| `/api/population` | District populations per server | Every 120s |
+| `/api/fieldoffices` | Active Field Office locations, difficulty, open/closed status | Every 120s |
 | `/api/doodles` | Available doodles for purchase with trait ratings | Every 12 hours |
-| `/api/sillymeter` | Silly Meter team scores and global progress | Every 90s |
-
-**Note:** Invasions API exists but is intentionally excluded (building-level granularity is unavailable; TTR API returns only department-level data).
+| `/api/sillymeter` | Silly Meter team scores and global progress | Every 120s |
+| `/api/invasions` | Active cog invasions by department | Every 120s |
 
 ---
 
@@ -218,9 +219,11 @@ See **`DEPLOY.md`** for detailed step-by-step instructions, invite URLs, and tro
 ## Version History
 
 **V Alpha 0.5.0** — Current release (Closed Alpha).
-- **`#suit-calculator` static channel** — 4 pinned embeds (one per faction) showing the full promotion point tables for every cog suit level (1–20), including 2.0 variants. Posted/edited on startup and `/pdrefresh`; not on the 90-second loop.
-- `/pdsetup` now creates `#suit-calculator` alongside `#tt-information` and `#tt-doodles`.
-- `/pdrefresh` now also refreshes the suit-calculator embeds.
+- **`#suit-calc` static channel** — 4 pinned embeds (one per faction) showing the full promotion point tables for every cog suit level (1–20), including 2.0 variants. Posted/edited on startup and `/pdrefresh`; not on the 120-second loop.
+- `/pdsetup` now creates `#suit-calc` alongside `#tt-info` and `#tt-doodles`.
+- `/pdrefresh` now also refreshes the suit-calc embeds.
+- `/pdboot` command — removes channels and has bot leave the guild.
+- `/beanfest` command — community event schedule for Goofy's Speedway.
 - Hierarchical logging for thread operations (suit calculator messages added/removed/updated per faction).
 
 **V Alpha 0.4.0**
